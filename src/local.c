@@ -60,6 +60,7 @@
 #include "plugin.h"
 #include "local.h"
 #include "winsock.h"
+#include "xkcp_config.h"
 
 #ifndef LIB_ONLY
 #ifdef __APPLE__
@@ -1370,6 +1371,7 @@ main(int argc, char **argv)
     int remote_num = 0;
     ss_addr_t remote_addr[MAX_REMOTE_NUM];
     char *remote_port = NULL;
+    struct xkcp_config *config;
 
     static struct option long_options[] = {
         { "reuse-port",  no_argument,       NULL, GETOPT_VAL_REUSE_PORT  },
@@ -1508,6 +1510,12 @@ main(int argc, char **argv)
         usage();
         exit(EXIT_FAILURE);
     }
+
+    config = xkcp_get_config();
+
+	config_init();
+
+	//parse_commandline(argc, argv);
 
     if (argc == 1) {
         if (conf_path == NULL) {

@@ -52,6 +52,11 @@ install(FILES
         DESTINATION pkgconfig
         )
 
+include_directories(kcp)
+set(KCP_SOURCE
+        kcp/ikcp.c)
+add_library(kcp STATIC ${KCP_SOURCE})
+
 if (WITH_EMBEDDED_SRC)
 # We need libcork,libipset headers
 include_directories(libcork/include)
