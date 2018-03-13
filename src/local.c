@@ -1091,9 +1091,28 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
     }
 }
 
+/*Loki: */
+static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user)
+{
+    remote_t *remote = user;
+
+	/* struct xkcp_proxy_param *ptr = user; */
+	/* int nret = sendto(ptr->xkcpfd, buf, len, 0, (struct sockaddr *)&ptr->sockaddr, sizeof(ptr->sockaddr)); */
+	/* if (nret > 0) */
+	/* 	debug(LOG_DEBUG, "xkcp_output conv [%d] fd [%d] len [%d], send datagram from %d", */
+	/* 	  	kcp->conv, ptr->xkcpfd, len, nret); */
+	/* else */
+	/* 	debug(LOG_INFO, "xkcp_output conv [%d] fd [%d] send datagram error: (%s)", */
+	/* 	  	kcp->conv, ptr->xkcpfd, strerror(errno)); */
+
+	/* return nret; */
+    return 0;
+}
+
 static remote_t *
 new_remote(int fd, int timeout)
 {
+	struct xkcp_param *param = xkcp_get_param();
     remote_t *remote;
     remote = ss_malloc(sizeof(remote_t));
 
@@ -1110,6 +1129,18 @@ new_remote(int fd, int timeout)
     remote->fd                  = fd;
     remote->recv_ctx->remote    = remote;
     remote->send_ctx->remote    = remote;
+
+    /*Loki: init kcmp*/
+    static int conv = 1;
+    remote->kcp                 = ikcp_create(conv, remote);
+	conv++;
+    
+	remote->kcp->output	= kcp_output;
+	ikcp_wndsize(remote->kcp, param->sndwnd, param->rcvwnd);
+	ikcp_nodelay(remote->kcp, param->nodelay, param->interval, param->resend, param->nc);
+	LOGI("sndwnd [%d] rcvwnd [%d] nodelay [%d] interval [%d] resend [%d] nc [%d]",
+		 param->sndwnd, param->rcvwnd, param->nodelay, param->interval, param->resend, param->nc);
+    /**/
 
     ev_io_init(&remote->recv_ctx->io, remote_recv_cb, fd, EV_READ);
     ev_io_init(&remote->send_ctx->io, remote_send_cb, fd, EV_WRITE);

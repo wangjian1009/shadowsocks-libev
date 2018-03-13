@@ -38,6 +38,7 @@
 #include "crypto.h"
 #include "jconf.h"
 #include "protocol.h"
+#include "ikcp.h"
 
 #include "common.h"
 
@@ -95,6 +96,7 @@ typedef struct remote {
 #endif
 
     buffer_t *buf;
+    ikcpcb *kcp;
 
     struct remote_ctx *recv_ctx;
     struct remote_ctx *send_ctx;
