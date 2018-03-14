@@ -289,7 +289,9 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
     if (revents != EV_TIMER) {
         r = recv(server->fd, buf->data + buf->len, BUF_SIZE - buf->len, 0);
-        LOGI("server recv r=%d", (int)r);
+        if (verbose) {
+            LOGI("server[%d]: cli: >>> %d", server->fd, (int)r);
+        }
         
         if (r == 0) {
             // connection closed
@@ -732,11 +734,11 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
             if (verbose) {
                 if (sni_detected || atyp == 3)
-                    LOGI("connect to %s:%s", host, port);
+                    LOGI("server[%d]: connect to %s:%s", server->fd, host, port);
                 else if (atyp == 1)
-                    LOGI("connect to %s:%s", ip, port);
+                    LOGI("server[%d]: connect to %s:%s", server->fd, ip, port);
                 else if (atyp == 4)
-                    LOGI("connect to [%s]:%s", ip, port);
+                    LOGI("server[%d]: connect to [%s]:%s", server->fd, ip, port);
             }
 
             if (acl
@@ -870,6 +872,7 @@ server_send_cb(EV_P_ ev_io *w, int revents)
     remote_t *remote              = server->remote;
     if (server->buf->len == 0) {
         // close and free
+        LOGI("server: close for send with buf 0");
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
         return;
@@ -879,15 +882,21 @@ server_send_cb(EV_P_ ev_io *w, int revents)
                          server->buf->len, 0);
         if (s == -1) {
             if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                ERROR("server_send_cb_send");
+                ERROR("server: send error");
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
             }
             return;
         } else if (s < (ssize_t)(server->buf->len)) {
             // partly sent, move memory, wait for the next time to send
+
             server->buf->len -= s;
             server->buf->idx += s;
+
+            if (verbose) {
+                LOGI("server[%d]: cli: <<< %d | %d", server->fd, (int)s, (int)server->buf->len);
+            }
+            
             return;
         } else {
             // all sent out, wait for reading
@@ -895,7 +904,12 @@ server_send_cb(EV_P_ ev_io *w, int revents)
             server->buf->idx = 0;
             ev_io_stop(EV_A_ & server_send_ctx->io);
             ev_io_start(EV_A_ & remote->recv_ctx->io);
-            LOGI("start watch in server send");
+
+            if (verbose) {
+                LOGI("server[%d]: cli: <<< %d", server->fd, (int)s);
+            }
+            
+            LOGI("remote: start watch in server send");
             return;
         }
     }
@@ -943,31 +957,40 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         char buf[1500] = {0};
         int nrecv = 0;
 
-        int index = 0;
         if ((nrecv = recvfrom(remote->fd, buf, sizeof(buf)-1, 0, (struct sockaddr *) &remote->addr, (socklen_t*)&remote->addr_len)) > 0) {
             int conv = ikcp_getconv(buf);
 
-            LOGI("[%d] remote_rcv_cb [%d] len [%d] conv [%d] kcp conv is [%d]",
-                 index++, remote->fd, nrecv, conv, remote->kcp->conv);
+            assert(conv == remote->kcp->conv);
+            if (verbose) {
+                LOGI("server[%d]: udp         <<< %d", server->fd, nrecv);
+            }
 
             int nret = ikcp_input(remote->kcp, buf, nrecv);
             if (nret < 0) {
-                LOGI("conv [%d] ikcp_input failed [%d]", conv, nret);
-            }
-
-            assert(server->buf->len == 0);
-            int r = ikcp_recv(remote->kcp, server->buf->data, BUF_SIZE);
-            if (r < 0) {
-                if (r == -3) {
-                    LOGE("obuf is small");
+                if (verbose) {
+                    LOGE("server[%d]: kcp input %d data fail, rv=%d", server->fd, nrecv, nret);
                 }
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
                 return;
             }
 
-            LOGI("xkcp_forward_data conv [%d] client[%d] send [%d]",
-                 remote->kcp->conv, server->fd, r);
+            assert(server->buf->len == 0);
+            int r = ikcp_recv(remote->kcp, server->buf->data, BUF_SIZE);
+            if (r < 0) {
+                if (r == -3) {
+                    if (verbose) {
+                        LOGE("server[%d]: kcp     <<< error, obuf small", server->fd);
+                    }
+                    close_and_free_remote(EV_A_ remote);
+                    close_and_free_server(EV_A_ server);
+                }
+                return;
+            }
+
+            if (verbose) {
+                LOGI("server[%d]: kcp     <<< %d", server->fd, r);
+            }
 
             server->buf->len = r;
         }
@@ -979,6 +1002,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
 
         if (r == 0) {
             // connection closed
+            LOGI("server: close for connection colsed"); 
             close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
             return;
@@ -988,7 +1012,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
                 // continue to wait for recv
                 return;
             } else {
-                ERROR("remote_recv_cb_recv");
+                ERROR("server: close for continue recv error");
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
                 return;
@@ -1019,6 +1043,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     if (s == -1) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             // no data, wait for send
+            LOGI("remote: stop watch for first send block");
             server->buf->idx = 0;
             ev_io_stop(EV_A_ & remote_recv_ctx->io);
             ev_io_start(EV_A_ & server->send_ctx->io);
@@ -1031,8 +1056,21 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     } else if (s < (int)(server->buf->len)) {
         server->buf->len -= s;
         server->buf->idx  = s;
+
+        if (verbose) {
+            LOGI("server[%d]: cli: <<< %d | %d", server->fd, s, (int)server->buf->len);
+        }
+
+        LOGE("xxxxx: stop watch for first send part, left=%d", (int)server->buf->len);
         ev_io_stop(EV_A_ & remote_recv_ctx->io);
         ev_io_start(EV_A_ & server->send_ctx->io);
+    }
+    else {
+        server->buf->len = 0;
+
+        if (verbose) {
+            LOGI("server[%d]: cli: <<< %d", server->fd, s);
+        }
     }
 
     // Disable TCP_NODELAY after the first response are sent
@@ -1096,7 +1134,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
             ev_timer_stop(EV_A_ & remote_send_ctx->watcher);
             ev_timer_start(EV_A_ & remote->recv_ctx->watcher);
             ev_io_start(EV_A_ & remote->recv_ctx->io);
-            LOGI("stop watch");
+            LOGI("remote: start watch for get peername");
 
             // no need to send any data
             if (remote->buf->len == 0) {
@@ -1115,6 +1153,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
 
     if (remote->buf->len == 0) {
         // close and free
+        LOGI("server: close for no send data");
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
         return;
@@ -1175,8 +1214,6 @@ new_remote(int fd, int timeout, uint8_t use_kcp)
         remote->kcp->output	= kcp_output;
         ikcp_wndsize(remote->kcp, param->sndwnd, param->rcvwnd);
         ikcp_nodelay(remote->kcp, param->nodelay, param->interval, param->resend, param->nc);
-        LOGI("kcp: sndwnd [%d] rcvwnd [%d] nodelay [%d] interval [%d] resend [%d] nc [%d]",
-             param->sndwnd, param->rcvwnd, param->nodelay, param->interval, param->resend, param->nc);
 
         remote->kcp_watcher.data = remote;
         ev_timer_init(&remote->kcp_watcher, kcp_update_cb, 0.001, 0.001);
@@ -1439,14 +1476,18 @@ accept_cb(EV_P_ ev_io *w, int revents)
 
 /*Loki: kcp */
 static ssize_t send_to_remote(EV_P_ remote_t *remote, const void *buffer, size_t length) {
+    server_t *server = remote->server;
+
     if (remote->kcp) {
         int kcp_r = ikcp_send(remote->kcp, buffer, length);
-        LOGI("kcp_send: len=%d, rv=%d, buf.len=%d", (int)length, (int)kcp_r, (int)remote->server->buf->len);
+        if (verbose) {
+            LOGI("server[%d]: kcp     >>> %d", server->fd, (int)length);
+        }
+        
         kcp_timer_reset(EV_A_ remote);
-
-        if (remote->server->buf->len == 0) {
+        if (remote->server->buf->len == 0 && !ev_is_active(& remote->recv_ctx->io)) {
             ev_io_start(EV_A_ & remote->recv_ctx->io);
-            LOGI("start watch in send to remote");
+            LOGI("XXXXX: start watch in send to remote");
         }
 
         return kcp_r;
@@ -1457,15 +1498,16 @@ static ssize_t send_to_remote(EV_P_ remote_t *remote, const void *buffer, size_t
 }
 
 static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user) {
-    remote_t *remote = user;
+    remote_t * remote = user;
+    server_t * server = remote->server;
 	int nret = sendto(remote->fd, buf, len, 0, (struct sockaddr *)&remote->addr, remote->addr_len);
 	if (nret > 0) {
-		LOGI("kcp_output conv [%d] fd [%d] len [%d], send datagram from %d",
-             kcp->conv, remote->fd, len, nret);
+        if (verbose) {
+            LOGI("server[%d]: udp         >>> %d(%d) data", server->fd, nret, len);
+        }
     }
 	else {
-		LOGE("kcp_output conv [%d] fd [%d] len [%d], send datagram error: (%s)",
-             kcp->conv, remote->fd, len, strerror(errno));
+        LOGE("server[%d]: udp         >>> %d data error: %s", server->fd, len, strerror(errno));
     }
 
 	return nret;
@@ -1480,11 +1522,10 @@ static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents) {
 
     millisec = (IUINT32)(ptv.tv_usec / 1000) + (IUINT32)ptv.tv_sec * 1000;
     ikcp_update(remote->kcp, millisec);
-    LOGI("kcp_update, buf.len=%d", (int)remote->server->buf->len);
 
-    if (remote->server->buf->len == 0) {
+    if (remote->server->buf->len == 0 && !ev_is_active(& remote->recv_ctx->io)) {
         ev_io_start(EV_A_ & remote->recv_ctx->io);
-        LOGI("start watch in update");
+        LOGI("XXXX: remote: start watch in update");
     }        
     
     kcp_timer_reset(EV_A_ remote);
