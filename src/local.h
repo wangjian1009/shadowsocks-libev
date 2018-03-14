@@ -54,7 +54,6 @@ typedef struct listen_ctx {
 
 typedef struct server_ctx {
     ev_io io;
-    int connected;
     struct server *server;
 } server_ctx_t;
 

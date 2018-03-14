@@ -1290,8 +1290,6 @@ new_server(int fd)
     memset(server->recv_ctx, 0, sizeof(server_ctx_t));
     memset(server->send_ctx, 0, sizeof(server_ctx_t));
     server->stage               = STAGE_INIT;
-    server->recv_ctx->connected = 0;
-    server->send_ctx->connected = 0;
     server->fd                  = fd;
     server->recv_ctx->server    = server;
     server->send_ctx->server    = server;
