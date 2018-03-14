@@ -26,6 +26,7 @@
 
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/time.h>
 #include <fcntl.h>
 #include <locale.h>
 #include <signal.h>
@@ -136,6 +137,12 @@ static void close_and_free_server(EV_P_ server_t *server);
 
 static remote_t *new_remote(int fd, int timeout);
 static server_t *new_server(int fd);
+
+/*Loki: */
+static ssize_t send_to_remote(remote_t *remote, const void *buffer, size_t length);
+static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user);
+static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents);
+/**/
 
 static struct cork_dllist connections;
 
@@ -442,7 +449,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                     FATAL("fast open is not enabled in this build");
 #endif
                     if (s == 0)
-                        s = send(remote->fd, remote->buf->data, remote->buf->len, 0);
+                        s = send_to_remote(remote, remote->buf->data, remote->buf->len);
 #endif
                     if (s == -1) {
                         if (errno == CONNECT_IN_PROGRESS) {
@@ -475,7 +482,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                     }
                 }
             } else {
-                int s = send(remote->fd, remote->buf->data, remote->buf->len, 0);
+                int s = send_to_remote(remote, remote->buf->data, remote->buf->len);
                 if (s == -1) {
                     if (errno == EAGAIN || errno == EWOULDBLOCK) {
                         // no data, wait for send
@@ -840,6 +847,12 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             server->remote = remote;
             remote->server = server;
 
+            /*Loki: kcp*/
+            if (remote->kcp) {
+                ev_timer_start(EV_A_ & remote->kcp_watcher);
+            }
+            /**/
+
             if (buf->len > 0 || sni_detected) {
                 continue;
             } else {
@@ -1066,8 +1079,8 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
         return;
     } else {
         // has data to send
-        ssize_t s = send(remote->fd, remote->buf->data + remote->buf->idx,
-                         remote->buf->len, 0);
+        ssize_t s = send_to_remote(remote, remote->buf->data + remote->buf->idx,
+                                   remote->buf->len);
         if (s == -1) {
             if (errno != EAGAIN && errno != EWOULDBLOCK) {
                 ERROR("remote_send_cb_send");
@@ -1089,24 +1102,6 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
             ev_io_start(EV_A_ & server->recv_ctx->io);
         }
     }
-}
-
-/*Loki: */
-static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user)
-{
-    remote_t *remote = user;
-
-	/* struct xkcp_proxy_param *ptr = user; */
-	/* int nret = sendto(ptr->xkcpfd, buf, len, 0, (struct sockaddr *)&ptr->sockaddr, sizeof(ptr->sockaddr)); */
-	/* if (nret > 0) */
-	/* 	debug(LOG_DEBUG, "xkcp_output conv [%d] fd [%d] len [%d], send datagram from %d", */
-	/* 	  	kcp->conv, ptr->xkcpfd, len, nret); */
-	/* else */
-	/* 	debug(LOG_INFO, "xkcp_output conv [%d] fd [%d] send datagram error: (%s)", */
-	/* 	  	kcp->conv, ptr->xkcpfd, strerror(errno)); */
-
-	/* return nret; */
-    return 0;
 }
 
 static remote_t *
@@ -1140,6 +1135,9 @@ new_remote(int fd, int timeout)
 	ikcp_nodelay(remote->kcp, param->nodelay, param->interval, param->resend, param->nc);
 	LOGI("sndwnd [%d] rcvwnd [%d] nodelay [%d] interval [%d] resend [%d] nc [%d]",
 		 param->sndwnd, param->rcvwnd, param->nodelay, param->interval, param->resend, param->nc);
+
+    remote->kcp_watcher.data = remote;
+    ev_timer_init(&remote->kcp_watcher, kcp_update_cb, 0.001, 0.001);
     /**/
 
     ev_io_init(&remote->recv_ctx->io, remote_recv_cb, fd, EV_READ);
@@ -1162,6 +1160,13 @@ free_remote(remote_t *remote)
         bfree(remote->buf);
         ss_free(remote->buf);
     }
+    /*Loki: kcp*/
+    if (remote->kcp != NULL) {
+        ikcp_release(remote->kcp);
+        remote->kcp = NULL;
+    }
+    /**/
+    
     ss_free(remote->recv_ctx);
     ss_free(remote->send_ctx);
     ss_free(remote);
@@ -1171,6 +1176,10 @@ static void
 close_and_free_remote(EV_P_ remote_t *remote)
 {
     if (remote != NULL) {
+        /*Loki: kcp*/
+        ev_timer_stop(EV_A_ & remote->kcp_watcher);
+        /*kcp*/
+        
         ev_timer_stop(EV_A_ & remote->send_ctx->watcher);
         ev_timer_stop(EV_A_ & remote->recv_ctx->watcher);
         ev_io_stop(EV_A_ & remote->send_ctx->io);
@@ -1369,6 +1378,47 @@ accept_cb(EV_P_ ev_io *w, int revents)
 
     ev_io_start(EV_A_ & server->recv_ctx->io);
 }
+
+/*Loki: kcp */
+static ssize_t send_to_remote(remote_t *remote, const void *buffer, size_t length) {
+    if (remote->kcp) {
+        int kcp_r = ikcp_send(remote->kcp, buffer, length);
+
+        return kcp_r;
+    }
+    else {
+        return send(remote->fd, buffer, length, 0);
+    }
+}
+
+static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user) {
+    remote_t *remote = user;
+	int nret = sendto(remote->fd, buf, len, 0, (struct sockaddr *)&remote->addr, sizeof(remote->addr));
+	if (nret > 0) {
+		LOGI("kcp_output conv [%d] fd [%d] len [%d], send datagram from %d",
+             kcp->conv, remote->fd, len, nret);
+    }
+	else {
+		LOGE("kcp_output conv [%d] fd [%d] send datagram error: (%s)",
+             kcp->conv, remote->fd, strerror(errno));
+    }
+
+	return nret;
+}
+
+static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents) {
+    remote_t * remote = watcher->data;
+    struct timeval ptv;
+    IUINT32 millisec;
+
+	gettimeofday(&ptv, NULL);
+
+    millisec = (IUINT32)(ptv.tv_usec / 1000) + (IUINT32)ptv.tv_sec * 1000;
+    ikcp_update(remote->kcp, millisec);
+    LOGI("kcp_update");
+}
+
+/**/
 
 #ifndef LIB_ONLY
 int

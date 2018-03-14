@@ -97,6 +97,7 @@ typedef struct remote {
 
     buffer_t *buf;
     ikcpcb *kcp;
+    ev_timer kcp_watcher;
 
     struct remote_ctx *recv_ctx;
     struct remote_ctx *send_ctx;
