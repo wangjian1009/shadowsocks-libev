@@ -1043,7 +1043,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     if (s == -1) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             // no data, wait for send
-            LOGI("remote: stop watch for first send block");
+            LOGI("XXXX: remote: stop watch for first send block");
             server->buf->idx = 0;
             ev_io_stop(EV_A_ & remote_recv_ctx->io);
             ev_io_start(EV_A_ & server->send_ctx->io);
@@ -1086,15 +1086,14 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
 static void
 remote_send_cb(EV_P_ ev_io *w, int revents)
 {
-    remote_ctx_t *remote_send_ctx = (remote_ctx_t *)w;
-    remote_t *remote              = remote_send_ctx->remote;
+    remote_t *remote              = ((remote_ctx_t *)w)->remote;
     server_t *server              = remote->server;
 
     /*Loki: kcp*/
     assert(remote->kcp == NULL);
     /**/
 
-    if (!remote_send_ctx->connected) {
+    if (!remote->send_ctx->connected) {
 #ifdef TCP_FASTOPEN_WINSOCK
         if (fast_open) {
             // Check if ConnectEx is done
@@ -1130,15 +1129,15 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
         socklen_t len = sizeof addr;
         int r         = getpeername(remote->fd, (struct sockaddr *)&addr, &len);
         if (r == 0) {
-            remote_send_ctx->connected = 1;
-            ev_timer_stop(EV_A_ & remote_send_ctx->watcher);
+            remote->send_ctx->connected = 1;
+            ev_timer_stop(EV_A_ & remote->send_ctx->watcher);
             ev_timer_start(EV_A_ & remote->recv_ctx->watcher);
             ev_io_start(EV_A_ & remote->recv_ctx->io);
             LOGI("remote: start watch for get peername");
 
             // no need to send any data
             if (remote->buf->len == 0) {
-                ev_io_stop(EV_A_ & remote_send_ctx->io);
+                ev_io_stop(EV_A_ & remote->send_ctx->io);
                 ev_io_start(EV_A_ & server->recv_ctx->io);
                 return;
             }
@@ -1178,7 +1177,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
             // all sent out, wait for reading
             remote->buf->len = 0;
             remote->buf->idx = 0;
-            ev_io_stop(EV_A_ & remote_send_ctx->io);
+            ev_io_stop(EV_A_ & remote->send_ctx->io);
             ev_io_start(EV_A_ & server->recv_ctx->io);
         }
     }
@@ -1515,6 +1514,7 @@ static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user) {
 
 static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents) {
     remote_t * remote = watcher->data;
+    server_t * server = remote->server;
     struct timeval ptv;
     IUINT32 millisec;
 
@@ -1522,8 +1522,9 @@ static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents) {
 
     millisec = (IUINT32)(ptv.tv_usec / 1000) + (IUINT32)ptv.tv_sec * 1000;
     ikcp_update(remote->kcp, millisec);
+    LOGI("XXXX: update, len=%d", (int)server->buf->len);
 
-    if (remote->server->buf->len == 0 && !ev_is_active(& remote->recv_ctx->io)) {
+    if (server->buf->len == 0 && !ev_is_active(& remote->recv_ctx->io)) {
         ev_io_start(EV_A_ & remote->recv_ctx->io);
         LOGI("XXXX: remote: start watch in update");
     }        
