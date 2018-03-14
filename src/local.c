@@ -135,13 +135,14 @@ static void close_and_free_remote(EV_P_ remote_t *remote);
 static void free_server(server_t *server);
 static void close_and_free_server(EV_P_ server_t *server);
 
-static remote_t *new_remote(int fd, int timeout);
+static remote_t *new_remote(int fd, int timeout, uint8_t use_kcp);
 static server_t *new_server(int fd);
 
 /*Loki: */
-static ssize_t send_to_remote(remote_t *remote, const void *buffer, size_t length);
+static ssize_t send_to_remote(EV_P_ remote_t *remote, const void *buffer, size_t length);
 static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user);
 static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents);
+static void kcp_timer_reset(EV_P_ remote_t *remote);
 /**/
 
 static struct cork_dllist connections;
@@ -288,7 +289,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
     if (revents != EV_TIMER) {
         r = recv(server->fd, buf->data + buf->len, BUF_SIZE - buf->len, 0);
-
+        LOGI("server recv r=%d", (int)r);
+        
         if (r == 0) {
             // connection closed
             close_and_free_remote(EV_A_ remote);
@@ -341,7 +343,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 }
             }
 
-            if (!remote->send_ctx->connected) {
+            if (!remote->kcp && !remote->send_ctx->connected) {
 #ifdef __ANDROID__
                 if (vpn) {
                     int not_protect = 0;
@@ -376,7 +378,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
                     // wait on remote connected event
                     ev_io_stop(EV_A_ & server_recv_ctx->io);
-                    ev_io_start(EV_A_ & remote->send_ctx->io);
+                    if (!remote->kcp) ev_io_start(EV_A_ & remote->send_ctx->io);
                     ev_timer_start(EV_A_ & remote->send_ctx->watcher);
                 } else {
 #if defined(MSG_FASTOPEN) && !defined(TCP_FASTOPEN_CONNECT)
@@ -449,14 +451,14 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                     FATAL("fast open is not enabled in this build");
 #endif
                     if (s == 0)
-                        s = send_to_remote(remote, remote->buf->data, remote->buf->len);
+                        s = send_to_remote(EV_A_ remote, remote->buf->data, remote->buf->len);
 #endif
                     if (s == -1) {
                         if (errno == CONNECT_IN_PROGRESS) {
                             // in progress, wait until connected
                             remote->buf->idx = 0;
                             ev_io_stop(EV_A_ & server_recv_ctx->io);
-                            ev_io_start(EV_A_ & remote->send_ctx->io);
+                            if (!remote->kcp) ev_io_start(EV_A_ & remote->send_ctx->io);
                             return;
                         } else {
                             if (errno == EOPNOTSUPP || errno == EPROTONOSUPPORT ||
@@ -476,19 +478,19 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                         remote->buf->idx  = s;
 
                         ev_io_stop(EV_A_ & server_recv_ctx->io);
-                        ev_io_start(EV_A_ & remote->send_ctx->io);
+                        if (!remote->kcp) ev_io_start(EV_A_ & remote->send_ctx->io);
                         ev_timer_start(EV_A_ & remote->send_ctx->watcher);
                         return;
                     }
                 }
             } else {
-                int s = send_to_remote(remote, remote->buf->data, remote->buf->len);
+                int s = send_to_remote(EV_A_ remote, remote->buf->data, remote->buf->len);
                 if (s == -1) {
                     if (errno == EAGAIN || errno == EWOULDBLOCK) {
                         // no data, wait for send
                         remote->buf->idx = 0;
                         ev_io_stop(EV_A_ & server_recv_ctx->io);
-                        ev_io_start(EV_A_ & remote->send_ctx->io);
+                        if (!remote->kcp) ev_io_start(EV_A_ & remote->send_ctx->io);
                         return;
                     } else {
                         ERROR("server_recv_cb_send");
@@ -500,7 +502,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                     remote->buf->len -= s;
                     remote->buf->idx  = s;
                     ev_io_stop(EV_A_ & server_recv_ctx->io);
-                    ev_io_start(EV_A_ & remote->send_ctx->io);
+                    if (!remote->kcp) ev_io_start(EV_A_ & remote->send_ctx->io);
                     return;
                 } else {
                     remote->buf->idx = 0;
@@ -848,11 +850,6 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             remote->server = server;
 
             /*Loki: kcp*/
-            if (remote->kcp) {
-                ev_timer_start(EV_A_ & remote->kcp_watcher);
-            }
-            /**/
-
             if (buf->len > 0 || sni_detected) {
                 continue;
             } else {
@@ -939,29 +936,65 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     remote_t *remote              = remote_recv_ctx->remote;
     server_t *server              = remote->server;
 
-    ev_timer_again(EV_A_ & remote->recv_ctx->watcher);
+    /*Loki: kcp*/
+    if (remote->kcp) {
+        char buf[1500] = {0};
+        int nrecv = 0;
 
-    ssize_t r = recv(remote->fd, server->buf->data, BUF_SIZE, 0);
+        int index = 0;
+        if ((nrecv = recvfrom(remote->fd, buf, sizeof(buf)-1, 0, (struct sockaddr *) &remote->addr, (socklen_t*)&remote->addr_len)) > 0) {
+            int conv = ikcp_getconv(buf);
 
-    if (r == 0) {
-        // connection closed
-        close_and_free_remote(EV_A_ remote);
-        close_and_free_server(EV_A_ server);
-        return;
-    } else if (r == -1) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            // no data
-            // continue to wait for recv
-            return;
-        } else {
-            ERROR("remote_recv_cb_recv");
+            LOGI("[%d] remote_rcv_cb [%d] len [%d] conv [%d] kcp conv is [%d]",
+                 index++, remote->fd, nrecv, conv, remote->kcp->conv);
+
+            int nret = ikcp_input(remote->kcp, buf, nrecv);
+            if (nret < 0) {
+                LOGI("conv [%d] ikcp_input failed [%d]", conv, nret);
+            }
+
+            assert(server->buf->len == 0);
+            int r = ikcp_recv(remote->kcp, server->buf->data, BUF_SIZE);
+            if (r < 0) {
+                if (r == -3) {
+                    LOGE("obuf is small");
+                }
+                close_and_free_remote(EV_A_ remote);
+                close_and_free_server(EV_A_ server);
+                return;
+            }
+
+            LOGI("xkcp_forward_data conv [%d] client[%d] send [%d]",
+                 remote->kcp->conv, server->fd, r);
+
+            server->buf->len = r;
+        }
+    }
+    else {
+        ev_timer_again(EV_A_ & remote->recv_ctx->watcher);
+
+        ssize_t r = recv(remote->fd, server->buf->data, BUF_SIZE, 0);
+
+        if (r == 0) {
+            // connection closed
             close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
             return;
+        } else if (r == -1) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // no data
+                // continue to wait for recv
+                return;
+            } else {
+                ERROR("remote_recv_cb_recv");
+                close_and_free_remote(EV_A_ remote);
+                close_and_free_server(EV_A_ server);
+                return;
+            }
         }
-    }
 
-    server->buf->len = r;
+        server->buf->len = r;
+    }
 
     if (!remote->direct) {
 #ifdef __ANDROID__
@@ -1007,6 +1040,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         setsockopt(remote->fd, SOL_TCP, TCP_NODELAY, &opt, sizeof(opt));
     }
     remote->recv_ctx->connected = 1;
+    
 }
 
 static void
@@ -1015,6 +1049,10 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
     remote_ctx_t *remote_send_ctx = (remote_ctx_t *)w;
     remote_t *remote              = remote_send_ctx->remote;
     server_t *server              = remote->server;
+
+    /*Loki: kcp*/
+    assert(remote->kcp == NULL);
+    /**/
 
     if (!remote_send_ctx->connected) {
 #ifdef TCP_FASTOPEN_WINSOCK
@@ -1079,7 +1117,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
         return;
     } else {
         // has data to send
-        ssize_t s = send_to_remote(remote, remote->buf->data + remote->buf->idx,
+        ssize_t s = send_to_remote(EV_A_ remote, remote->buf->data + remote->buf->idx,
                                    remote->buf->len);
         if (s == -1) {
             if (errno != EAGAIN && errno != EWOULDBLOCK) {
@@ -1105,7 +1143,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
 }
 
 static remote_t *
-new_remote(int fd, int timeout)
+new_remote(int fd, int timeout, uint8_t use_kcp)
 {
 	struct xkcp_param *param = xkcp_get_param();
     remote_t *remote;
@@ -1126,18 +1164,23 @@ new_remote(int fd, int timeout)
     remote->send_ctx->remote    = remote;
 
     /*Loki: init kcmp*/
-    static int conv = 1;
-    remote->kcp                 = ikcp_create(conv, remote);
-	conv++;
+    if (use_kcp) {
+        static int conv = 1;
+        remote->kcp                 = ikcp_create(conv, remote);
+        conv++;
     
-	remote->kcp->output	= kcp_output;
-	ikcp_wndsize(remote->kcp, param->sndwnd, param->rcvwnd);
-	ikcp_nodelay(remote->kcp, param->nodelay, param->interval, param->resend, param->nc);
-	LOGI("sndwnd [%d] rcvwnd [%d] nodelay [%d] interval [%d] resend [%d] nc [%d]",
-		 param->sndwnd, param->rcvwnd, param->nodelay, param->interval, param->resend, param->nc);
+        remote->kcp->output	= kcp_output;
+        ikcp_wndsize(remote->kcp, param->sndwnd, param->rcvwnd);
+        ikcp_nodelay(remote->kcp, param->nodelay, param->interval, param->resend, param->nc);
+        LOGI("kcp: sndwnd [%d] rcvwnd [%d] nodelay [%d] interval [%d] resend [%d] nc [%d]",
+             param->sndwnd, param->rcvwnd, param->nodelay, param->interval, param->resend, param->nc);
 
-    remote->kcp_watcher.data = remote;
-    ev_timer_init(&remote->kcp_watcher, kcp_update_cb, 0.001, 0.001);
+        remote->kcp_watcher.data = remote;
+        ev_timer_init(&remote->kcp_watcher, kcp_update_cb, 0.001, 0.001);
+    }
+    else {
+        remote->kcp = NULL;
+    }
     /**/
 
     ev_io_init(&remote->recv_ctx->io, remote_recv_cb, fd, EV_READ);
@@ -1274,6 +1317,7 @@ create_remote(listen_ctx_t *listener,
               struct sockaddr *addr)
 {
     struct sockaddr *remote_addr;
+    uint8_t use_kcp = 1;
 
     int index = rand() % listener->remote_num;
     if (addr == NULL) {
@@ -1282,38 +1326,47 @@ create_remote(listen_ctx_t *listener,
         remote_addr = addr;
     }
 
-    int remotefd = socket(remote_addr->sa_family, SOCK_STREAM, IPPROTO_TCP);
-
-    if (remotefd == -1) {
-        ERROR("socket");
-        return NULL;
+    int remotefd;
+    if (use_kcp) {
+        remotefd = socket(AF_INET, SOCK_DGRAM, 0);
+        if (remotefd == -1) {
+            ERROR("socket");
+            return NULL;
+        }
     }
+    else {
+        remotefd = socket(remote_addr->sa_family, SOCK_STREAM, IPPROTO_TCP);
+        if (remotefd == -1) {
+            ERROR("socket");
+            return NULL;
+        }
 
-    int opt = 1;
-    setsockopt(remotefd, SOL_TCP, TCP_NODELAY, &opt, sizeof(opt));
+        int opt = 1;
+        setsockopt(remotefd, SOL_TCP, TCP_NODELAY, &opt, sizeof(opt));
 #ifdef SO_NOSIGPIPE
-    setsockopt(remotefd, SOL_SOCKET, SO_NOSIGPIPE, &opt, sizeof(opt));
+        setsockopt(remotefd, SOL_SOCKET, SO_NOSIGPIPE, &opt, sizeof(opt));
 #endif
 
-    if (listener->mptcp > 1) {
-        int err = setsockopt(remotefd, SOL_TCP, listener->mptcp, &opt, sizeof(opt));
-        if (err == -1) {
-            ERROR("failed to enable multipath TCP");
-        }
-    } else if (listener->mptcp == 1) {
-        int i = 0;
-        while ((listener->mptcp = mptcp_enabled_values[i]) > 0) {
+        if (listener->mptcp > 1) {
             int err = setsockopt(remotefd, SOL_TCP, listener->mptcp, &opt, sizeof(opt));
-            if (err != -1) {
-                break;
+            if (err == -1) {
+                ERROR("failed to enable multipath TCP");
             }
-            i++;
-        }
-        if (listener->mptcp == 0) {
-            ERROR("failed to enable multipath TCP");
+        } else if (listener->mptcp == 1) {
+            int i = 0;
+            while ((listener->mptcp = mptcp_enabled_values[i]) > 0) {
+                int err = setsockopt(remotefd, SOL_TCP, listener->mptcp, &opt, sizeof(opt));
+                if (err != -1) {
+                    break;
+                }
+                i++;
+            }
+            if (listener->mptcp == 0) {
+                ERROR("failed to enable multipath TCP");
+            }
         }
     }
-
+    
     // Setup
     setnonblocking(remotefd);
 #ifdef SET_INTERFACE
@@ -1323,7 +1376,7 @@ create_remote(listen_ctx_t *listener,
     }
 #endif
 
-    remote_t *remote = new_remote(remotefd, listener->timeout);
+    remote_t *remote = new_remote(remotefd, listener->timeout, use_kcp);
     remote->addr_len = get_sockaddr_len(remote_addr);
     memcpy(&(remote->addr), remote_addr, remote->addr_len);
 
@@ -1380,10 +1433,11 @@ accept_cb(EV_P_ ev_io *w, int revents)
 }
 
 /*Loki: kcp */
-static ssize_t send_to_remote(remote_t *remote, const void *buffer, size_t length) {
+static ssize_t send_to_remote(EV_P_ remote_t *remote, const void *buffer, size_t length) {
     if (remote->kcp) {
         int kcp_r = ikcp_send(remote->kcp, buffer, length);
-
+        LOGI("kcp_send: len=%d, rv=%d", (int)length, (int)kcp_r);
+        kcp_timer_reset(EV_A_ remote);
         return kcp_r;
     }
     else {
@@ -1393,14 +1447,14 @@ static ssize_t send_to_remote(remote_t *remote, const void *buffer, size_t lengt
 
 static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user) {
     remote_t *remote = user;
-	int nret = sendto(remote->fd, buf, len, 0, (struct sockaddr *)&remote->addr, sizeof(remote->addr));
+	int nret = sendto(remote->fd, buf, len, 0, (struct sockaddr *)&remote->addr, remote->addr_len);
 	if (nret > 0) {
 		LOGI("kcp_output conv [%d] fd [%d] len [%d], send datagram from %d",
              kcp->conv, remote->fd, len, nret);
     }
 	else {
-		LOGE("kcp_output conv [%d] fd [%d] send datagram error: (%s)",
-             kcp->conv, remote->fd, strerror(errno));
+		LOGE("kcp_output conv [%d] fd [%d] len [%d], send datagram error: (%s)",
+             kcp->conv, remote->fd, len, strerror(errno));
     }
 
 	return nret;
@@ -1415,7 +1469,22 @@ static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents) {
 
     millisec = (IUINT32)(ptv.tv_usec / 1000) + (IUINT32)ptv.tv_sec * 1000;
     ikcp_update(remote->kcp, millisec);
-    LOGI("kcp_update");
+    /*LOGI("kcp_update");*/
+
+    kcp_timer_reset(EV_A_ remote);
+}
+
+static void kcp_timer_reset(EV_P_ remote_t *remote) {
+    struct timeval ptv;
+	gettimeofday(&ptv, NULL);
+
+    IUINT32 current_ms  = (IUINT32)(ptv.tv_usec / 1000) + (IUINT32)ptv.tv_sec * 1000;
+    IUINT32 update_ms = ikcp_check(remote->kcp, current_ms);
+
+    ev_timer_stop(EV_A_ & remote->kcp_watcher);
+
+    ev_timer_set(&remote->kcp_watcher, (float)(update_ms - current_ms) / 1000.0f, 0);
+    ev_timer_start(EV_A_ & remote->kcp_watcher);
 }
 
 /**/
