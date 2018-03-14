@@ -844,6 +844,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             if (buf->len > 0) {
                 memcpy(remote->buf->data, buf->data, buf->len);
                 remote->buf->len = buf->len;
+                buf->len = 0;
             }
 
             server->remote = remote;
@@ -894,6 +895,7 @@ server_send_cb(EV_P_ ev_io *w, int revents)
             server->buf->idx = 0;
             ev_io_stop(EV_A_ & server_send_ctx->io);
             ev_io_start(EV_A_ & remote->recv_ctx->io);
+            LOGI("start watch in server send");
             return;
         }
     }
@@ -1034,7 +1036,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     }
 
     // Disable TCP_NODELAY after the first response are sent
-    if (!remote->recv_ctx->connected && !no_delay) {
+    if (!remote->kcp && !remote->recv_ctx->connected && !no_delay) {
         int opt = 0;
         setsockopt(server->fd, SOL_TCP, TCP_NODELAY, &opt, sizeof(opt));
         setsockopt(remote->fd, SOL_TCP, TCP_NODELAY, &opt, sizeof(opt));
@@ -1094,6 +1096,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
             ev_timer_stop(EV_A_ & remote_send_ctx->watcher);
             ev_timer_start(EV_A_ & remote->recv_ctx->watcher);
             ev_io_start(EV_A_ & remote->recv_ctx->io);
+            LOGI("stop watch");
 
             // no need to send any data
             if (remote->buf->len == 0) {
@@ -1243,6 +1246,8 @@ new_server(int fd)
     server->recv_ctx = ss_malloc(sizeof(server_ctx_t));
     server->send_ctx = ss_malloc(sizeof(server_ctx_t));
     server->buf      = ss_malloc(sizeof(buffer_t));
+    server->buf->len = 0;
+    server->buf->idx = 0;
     server->abuf     = ss_malloc(sizeof(buffer_t));
     balloc(server->buf, BUF_SIZE);
     balloc(server->abuf, BUF_SIZE);
@@ -1436,8 +1441,14 @@ accept_cb(EV_P_ ev_io *w, int revents)
 static ssize_t send_to_remote(EV_P_ remote_t *remote, const void *buffer, size_t length) {
     if (remote->kcp) {
         int kcp_r = ikcp_send(remote->kcp, buffer, length);
-        LOGI("kcp_send: len=%d, rv=%d", (int)length, (int)kcp_r);
+        LOGI("kcp_send: len=%d, rv=%d, buf.len=%d", (int)length, (int)kcp_r, (int)remote->server->buf->len);
         kcp_timer_reset(EV_A_ remote);
+
+        if (remote->server->buf->len == 0) {
+            ev_io_start(EV_A_ & remote->recv_ctx->io);
+            LOGI("start watch in send to remote");
+        }
+
         return kcp_r;
     }
     else {
@@ -1469,8 +1480,13 @@ static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents) {
 
     millisec = (IUINT32)(ptv.tv_usec / 1000) + (IUINT32)ptv.tv_sec * 1000;
     ikcp_update(remote->kcp, millisec);
-    /*LOGI("kcp_update");*/
+    LOGI("kcp_update, buf.len=%d", (int)remote->server->buf->len);
 
+    if (remote->server->buf->len == 0) {
+        ev_io_start(EV_A_ & remote->recv_ctx->io);
+        LOGI("start watch in update");
+    }        
+    
     kcp_timer_reset(EV_A_ remote);
 }
 
