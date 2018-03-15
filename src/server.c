@@ -755,8 +755,7 @@ setTosFromConnmark(remote_t *remote, server_t *server)
 static void
 server_recv_cb(EV_P_ ev_io *w, int revents)
 {
-    server_ctx_t *server_recv_ctx = (server_ctx_t *)w;
-    server_t *server              = server_recv_ctx->server;
+    server_t *server              = ((server_ctx_t *)w)->server;
     remote_t *remote              = NULL;
 
     assert(! server->kcp);
@@ -824,10 +823,13 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 // no data, wait for send
                 remote->buf->idx = 0;
-                ev_io_stop(EV_A_ & server_recv_ctx->io);
+                IO_STOP(
+                    server->recv_ctx->io,
+                    "listener[%d]: server[%d]: tcp [- >>>] | send would block",
+                    server->listen_ctx->fd, server->fd_or_conv);
                 IO_START(
                     remote->send_ctx->io,
-                    "listener[%d]: server[%d]: tcp [+ >>>] | send would block",
+                    "listener[%d]: server[%d]: remote [+ >>>] | send would block",
                     server->listen_ctx->fd, server->fd_or_conv);
             } else {
                 ERROR("server_recv_send");
@@ -837,10 +839,13 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         } else if (s < remote->buf->len) {
             remote->buf->len -= s;
             remote->buf->idx  = s;
-            ev_io_stop(EV_A_ & server_recv_ctx->io);
+            IO_STOP(
+                server->recv_ctx->io,
+                "listener[%d]: server[%d]: tcp [- >>>] | send in process",
+                server->listen_ctx->fd, server->fd_or_conv);
             IO_START(
                 remote->send_ctx->io,
-                "listener[%d]: server[%d]: tcp [+ >>>] | send in process",
+                "listener[%d]: server[%d]: remote [+ >>>] | send in process",
                 server->listen_ctx->fd, server->fd_or_conv);
         }
         return;
@@ -1013,14 +1018,20 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 }
 
                 // waiting on remote connected event
-                ev_io_stop(EV_A_ & server_recv_ctx->io);
+                if (!server->kcp) {
+                    IO_STOP(
+                        server->recv_ctx->io,
+                        "listener[%d]: server[%d]: tcp [- >>>] | connect begin",
+                        server->listen_ctx->fd, server->fd_or_conv);
+                }
+                
                 IO_START(
                     remote->send_ctx->io,
                     "listener[%d]: server[%d]: remote [+ >>>] | connect begin",
                     server->listen_ctx->fd, server->fd_or_conv);
             }
         } else {
-            ev_io_stop(EV_A_ & server_recv_ctx->io);
+            ev_io_stop(EV_A_ & server->recv_ctx->io);
 
             query_t *query = ss_malloc(sizeof(query_t));
             memset(query, 0, sizeof(query_t));
