@@ -1322,6 +1322,10 @@ new_server(int fd)
 static void
 free_server(server_t *server)
 {
+    if (verbose) {
+        LOGI("server[%d]: free", server->fd);
+    }
+    
     cork_dllist_remove(&server->entries);
 
     if (server->remote != NULL) {
