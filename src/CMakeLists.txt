@@ -189,7 +189,7 @@ target_compile_definitions(ss-local PUBLIC -DMODULE_LOCAL)
 target_compile_definitions(ss-redir PUBLIC -DMODULE_REDIR)
 target_compile_definitions(shadowsocks-libev PUBLIC -DMODULE_LOCAL)
 
-target_link_libraries(ss-server cork ipset ${DEPS})
+target_link_libraries(ss-server cork ipset kcp ${DEPS})
 target_link_libraries(ss-tunnel cork ${DEPS})
 target_link_libraries(ss-manager m bloom cork ${LIBEV} ${LIBUDNS})
 target_link_libraries(ss-local cork ipset kcp ${DEPS})

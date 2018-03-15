@@ -39,6 +39,7 @@
 #include "crypto.h"
 #include "jconf.h"
 #include "resolv.h"
+#include "ikcp.h"
 
 #include "common.h"
 
@@ -54,7 +55,6 @@ typedef struct listen_ctx {
 typedef struct server_ctx {
     ev_io io;
     ev_timer watcher;
-    int connected;
     struct server *server;
 } server_ctx_t;
 
@@ -75,9 +75,12 @@ struct dscptracker {
 struct query;
 
 typedef struct server {
-    int fd;
+    int fd_or_conv;
     int stage;
     int frag;
+
+    ikcpcb *kcp;
+    ev_timer kcp_watcher;
 
     buffer_t *buf;
 

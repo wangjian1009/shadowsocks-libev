@@ -26,6 +26,7 @@
 
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/time.h>
 #include <fcntl.h>
 #include <locale.h>
 #include <signal.h>
@@ -100,7 +101,7 @@ static void server_timeout_cb(EV_P_ ev_timer *watcher, int revents);
 static void block_list_clear_cb(EV_P_ ev_timer *watcher, int revents);
 
 static remote_t *new_remote(int fd);
-static server_t *new_server(int fd, listen_ctx_t *listener);
+static server_t *new_server(int fd_or_conv, listen_ctx_t *listener);
 static remote_t *connect_to_remote(EV_P_ struct addrinfo *res,
                                    server_t *server);
 
@@ -110,6 +111,45 @@ static void free_server(server_t *server);
 static void close_and_free_server(EV_P_ server_t *server);
 static void resolv_cb(struct sockaddr *addr, void *data);
 static void resolv_free_cb(void *data);
+
+/**/
+static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user);
+static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents);
+static void kcp_timer_reset(EV_P_ server_t *server);
+
+#define IO_START(__h, __msg, args...)           \
+    do {                                        \
+        if (verbose && !ev_is_active(&__h)) {   \
+            LOGI(__msg, ##args );               \
+        }                                       \
+        ev_io_start(EV_A_ & __h);               \
+    } while(0)
+
+#define IO_STOP(__h, __msg, args...)            \
+    do {                                        \
+        if (verbose && ev_is_active(&__h)) {    \
+            LOGI(__msg, ##args );               \
+        }                                       \
+        ev_io_stop(EV_A_ & __h);                \
+    } while(0)
+
+#define TIMER_START(__h, __msg, args...)                    \
+    do {                                                    \
+        if (verbose && (__msg)[0] && !ev_is_active(&__h)) { \
+            LOGI(__msg, ##args );                           \
+        }                                                   \
+        ev_timer_start(EV_A_ & __h);                        \
+    } while(0)
+
+#define TIMER_STOP(__h, __msg, args...)                     \
+    do {                                                    \
+        if (verbose && (__msg)[0] && ev_is_active(&__h)) {  \
+            LOGI(__msg, ##args );                           \
+        }                                                   \
+        ev_timer_stop(EV_A_ & __h);                         \
+    } while(0)
+
+/**/
 
 int verbose      = 0;
 int reuse_port   = 0;
@@ -716,6 +756,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     server_t *server              = server_recv_ctx->server;
     remote_t *remote              = NULL;
 
+    assert(! server->kcp);
+    
     buffer_t *buf = server->buf;
 
     if (server->stage == STAGE_STREAM) {
@@ -725,7 +767,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         ev_timer_again(EV_A_ & server->recv_ctx->watcher);
     }
 
-    ssize_t r = recv(server->fd, buf->data, BUF_SIZE, 0);
+    assert(!server->kcp);
+    ssize_t r = recv(server->fd_or_conv, buf->data, BUF_SIZE, 0);
 
     if (r == 0) {
         // connection closed
@@ -754,13 +797,15 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     int err = crypto->decrypt(buf, server->d_ctx, BUF_SIZE);
 
     if (err == CRYPTO_ERROR) {
-        report_addr(server->fd, MALICIOUS, "authentication error");
+        assert(!server->kcp);
+        report_addr(server->fd_or_conv, MALICIOUS, "authentication error");
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
         return;
     } else if (err == CRYPTO_NEED_MORE) {
         if (server->stage != STAGE_STREAM && server->frag > MAX_FRAG) {
-            report_addr(server->fd, MALICIOUS, "malicious fragmentation");
+            assert(!server->kcp);
+            report_addr(server->fd_or_conv, MALICIOUS, "malicious fragmentation");
             close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
             return;
@@ -824,7 +869,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                           host, INET_ADDRSTRLEN);
                 offset += in_addr_len;
             } else {
-                report_addr(server->fd, MALFORMED, "invalid length for ipv4 address");
+                assert(!server->kcp);
+                report_addr(server->fd_or_conv, MALFORMED, "invalid length for ipv4 address");
                 close_and_free_server(EV_A_ server);
                 return;
             }
@@ -841,7 +887,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 memcpy(host, server->buf->data + offset + 1, name_len);
                 offset += name_len + 1;
             } else {
-                report_addr(server->fd, MALFORMED, "invalid host name length");
+                assert(!server->kcp);
+                report_addr(server->fd_or_conv, MALFORMED, "invalid host name length");
                 close_and_free_server(EV_A_ server);
                 return;
             }
@@ -874,7 +921,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 }
             } else {
                 if (!validate_hostname(host, name_len)) {
-                    report_addr(server->fd, MALFORMED, "invalid host name");
+                    assert(!server->kcp);
+                    report_addr(server->fd_or_conv, MALFORMED, "invalid host name");
                     close_and_free_server(EV_A_ server);
                     return;
                 }
@@ -892,7 +940,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 offset += in6_addr_len;
             } else {
                 LOGE("invalid header with addr type %d", atyp);
-                report_addr(server->fd, MALFORMED, "invalid length for ipv6 address");
+                assert(!server->kcp);
+                report_addr(server->fd_or_conv, MALFORMED, "invalid length for ipv6 address");
                 close_and_free_server(EV_A_ server);
                 return;
             }
@@ -905,7 +954,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         }
 
         if (offset == 1) {
-            report_addr(server->fd, MALFORMED, "invalid address type");
+            assert(!server->kcp);
+            report_addr(server->fd_or_conv, MALFORMED, "invalid address type");
             close_and_free_server(EV_A_ server);
             return;
         }
@@ -915,7 +965,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         offset += 2;
 
         if (server->buf->len < offset) {
-            report_addr(server->fd, MALFORMED, "invalid request length");
+            assert(!server->kcp);
+            report_addr(server->fd_or_conv, MALFORMED, "invalid request length");
             close_and_free_server(EV_A_ server);
             return;
         } else {
@@ -982,6 +1033,8 @@ server_send_cb(EV_P_ ev_io *w, int revents)
     server_t *server              = server_send_ctx->server;
     remote_t *remote              = server->remote;
 
+    assert(!server->kcp);
+    
     if (remote == NULL) {
         LOGE("invalid server");
         close_and_free_server(EV_A_ server);
@@ -998,7 +1051,8 @@ server_send_cb(EV_P_ ev_io *w, int revents)
         return;
     } else {
         // has data to send
-        ssize_t s = send(server->fd, server->buf->data + server->buf->idx,
+        assert(!server->kcp);
+        ssize_t s = send(server->fd_or_conv, server->buf->data + server->buf->idx,
                          server->buf->len, 0);
         if (s == -1) {
             if (errno != EAGAIN && errno != EWOULDBLOCK) {
@@ -1175,31 +1229,35 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
 #ifdef USE_NFCONNTRACK_TOS
     setTosFromConnmark(remote, server);
 #endif
-    int s = send(server->fd, server->buf->data, server->buf->len, 0);
+    if (server->kcp) {
+    }
+    else {
+        int s = send(server->fd_or_conv, server->buf->data, server->buf->len, 0);
 
-    if (s == -1) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            // no data, wait for send
-            server->buf->idx = 0;
+        if (s == -1) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // no data, wait for send
+                server->buf->idx = 0;
+                ev_io_stop(EV_A_ & remote_recv_ctx->io);
+                ev_io_start(EV_A_ & server->send_ctx->io);
+            } else {
+                ERROR("remote_recv_send");
+                close_and_free_remote(EV_A_ remote);
+                close_and_free_server(EV_A_ server);
+                return;
+            }
+        } else if (s < server->buf->len) {
+            server->buf->len -= s;
+            server->buf->idx  = s;
             ev_io_stop(EV_A_ & remote_recv_ctx->io);
             ev_io_start(EV_A_ & server->send_ctx->io);
-        } else {
-            ERROR("remote_recv_send");
-            close_and_free_remote(EV_A_ remote);
-            close_and_free_server(EV_A_ server);
-            return;
         }
-    } else if (s < server->buf->len) {
-        server->buf->len -= s;
-        server->buf->idx  = s;
-        ev_io_stop(EV_A_ & remote_recv_ctx->io);
-        ev_io_start(EV_A_ & server->send_ctx->io);
     }
 
     // Disable TCP_NODELAY after the first response are sent
     if (!remote->recv_ctx->connected && !no_delay) {
         int opt = 0;
-        setsockopt(server->fd, SOL_TCP, TCP_NODELAY, &opt, sizeof(opt));
+        if (!server->kcp) setsockopt(server->fd_or_conv, SOL_TCP, TCP_NODELAY, &opt, sizeof(opt));
         setsockopt(remote->fd, SOL_TCP, TCP_NODELAY, &opt, sizeof(opt));
     }
     remote->recv_ctx->connected = 1;
@@ -1261,7 +1319,8 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
             remote_send_ctx->connected = 1;
 
             // Clear the state of this address in the block list
-            reset_addr(server->fd);
+            assert(!server->kcp);
+            reset_addr(server->fd_or_conv);
 
             if (remote->buf->len == 0) {
                 server->stage = STAGE_STREAM;
@@ -1385,7 +1444,7 @@ close_and_free_remote(EV_P_ remote_t *remote)
 }
 
 static server_t *
-new_server(int fd, listen_ctx_t *listener)
+new_server(int fd_or_conv, listen_ctx_t *listener)
 {
     if (verbose) {
         server_conn++;
@@ -1402,11 +1461,9 @@ new_server(int fd, listen_ctx_t *listener)
     memset(server->recv_ctx, 0, sizeof(server_ctx_t));
     memset(server->send_ctx, 0, sizeof(server_ctx_t));
     balloc(server->buf, BUF_SIZE);
-    server->fd                  = fd;
+    server->fd_or_conv                  = fd_or_conv;
     server->recv_ctx->server    = server;
-    server->recv_ctx->connected = 0;
     server->send_ctx->server    = server;
-    server->send_ctx->connected = 0;
     server->stage               = STAGE_INIT;
     server->frag                = 0;
     server->query               = NULL;
@@ -1418,13 +1475,27 @@ new_server(int fd, listen_ctx_t *listener)
     crypto->ctx_init(crypto->cipher, server->e_ctx, 1);
     crypto->ctx_init(crypto->cipher, server->d_ctx, 0);
 
-    int request_timeout = min(MAX_REQUEST_TIMEOUT, listener->timeout)
-                          + rand() % MAX_REQUEST_TIMEOUT;
+    /*Loki: init kcmp*/
+    if (listener->use_kcp) {
+        server->kcp                 = ikcp_create(fd_or_conv, server);
+    
+        server->kcp->output	= kcp_output;
+        /* ikcp_wndsize(server->kcp, param->sndwnd, param->rcvwnd); */
+        /* ikcp_nodelay(server->kcp, param->nodelay, param->interval, param->resend, param->nc); */
 
-    ev_io_init(&server->recv_ctx->io, server_recv_cb, fd, EV_READ);
-    ev_io_init(&server->send_ctx->io, server_send_cb, fd, EV_WRITE);
-    ev_timer_init(&server->recv_ctx->watcher, server_timeout_cb,
-                  request_timeout, listener->timeout);
+        server->kcp_watcher.data = server;
+        ev_timer_init(&server->kcp_watcher, kcp_update_cb, 0.001, 0.001);
+    }
+    else {
+        server->kcp = NULL;
+
+        ev_io_init(&server->recv_ctx->io, server_recv_cb, fd_or_conv, EV_READ);
+        ev_io_init(&server->send_ctx->io, server_send_cb, fd_or_conv, EV_WRITE);
+    }
+    /**/
+    
+    int request_timeout = min(MAX_REQUEST_TIMEOUT, listener->timeout) + rand() % MAX_REQUEST_TIMEOUT;
+    ev_timer_init(&server->recv_ctx->watcher, server_timeout_cb, request_timeout, listener->timeout);
 
     cork_dllist_add(&connections, &server->entries);
 
@@ -1463,6 +1534,12 @@ free_server(server_t *server)
         ss_free(server->buf);
     }
 
+    /*Loki: kcp*/
+    if (server->kcp != NULL) {
+        ikcp_release(server->kcp);
+        server->kcp = NULL;
+    }
+    
     ss_free(server->recv_ctx);
     ss_free(server->send_ctx);
     ss_free(server);
@@ -1479,7 +1556,7 @@ close_and_free_server(EV_P_ server_t *server)
         ev_io_stop(EV_A_ & server->send_ctx->io);
         ev_io_stop(EV_A_ & server->recv_ctx->io);
         ev_timer_stop(EV_A_ & server->recv_ctx->watcher);
-        close(server->fd);
+        if (!server->kcp) close(server->fd_or_conv);
         free_server(server);
         if (verbose) {
             server_conn--;
@@ -1516,51 +1593,115 @@ static void
 accept_cb(EV_P_ ev_io *w, int revents)
 {
     listen_ctx_t *listener = (listen_ctx_t *)w;
-    int serverfd           = accept(listener->fd, NULL, NULL);
-    if (serverfd == -1) {
-        ERROR("accept");
-        return;
-    }
+    int fd_or_conv;
 
-    char *peer_name = get_peer_name(serverfd);
-    if (peer_name != NULL) {
-        int in_white_list = 0;
-        if (acl) {
-            if ((get_acl_mode() == BLACK_LIST && acl_match_host(peer_name) == 1)
-                || (get_acl_mode() == WHITE_LIST && acl_match_host(peer_name) >= 0)) {
-                LOGE("Access denied from %s", peer_name);
-                close(serverfd);
-                return;
-            } else if (acl_match_host(peer_name) == -1) {
-                in_white_list = 1;
-            }
-        }
-        if (!in_white_list && plugin == NULL
-            && check_block_list(peer_name)) {
-            LOGE("block all requests from %s", peer_name);
-#ifdef __linux__
-            set_linger(serverfd);
-#endif
-            close(serverfd);
+    if (listener->use_kcp) {
+        fd_or_conv = -1;
+    }
+    else {
+        fd_or_conv = accept(listener->fd, NULL, NULL);
+        if (fd_or_conv == -1) {
+            ERROR("accept");
             return;
         }
-    }
 
-    int opt = 1;
-    setsockopt(serverfd, SOL_TCP, TCP_NODELAY, &opt, sizeof(opt));
-#ifdef SO_NOSIGPIPE
-    setsockopt(serverfd, SOL_SOCKET, SO_NOSIGPIPE, &opt, sizeof(opt));
+        char *peer_name = get_peer_name(fd_or_conv);
+        if (peer_name != NULL) {
+            int in_white_list = 0;
+            if (acl) {
+                if ((get_acl_mode() == BLACK_LIST && acl_match_host(peer_name) == 1)
+                    || (get_acl_mode() == WHITE_LIST && acl_match_host(peer_name) >= 0)) {
+                    LOGE("Access denied from %s", peer_name);
+                    close(fd_or_conv);
+                    return;
+                } else if (acl_match_host(peer_name) == -1) {
+                    in_white_list = 1;
+                }
+            }
+            if (!in_white_list && plugin == NULL
+                && check_block_list(peer_name)) {
+                LOGE("block all requests from %s", peer_name);
+#ifdef __linux__
+                set_linger(fd_or_conv);
 #endif
-    setnonblocking(serverfd);
+                close(fd_or_conv);
+                return;
+            }
+        }
 
-    if (verbose) {
-        LOGI("accept a connection");
+        int opt = 1;
+        setsockopt(fd_or_conv, SOL_TCP, TCP_NODELAY, &opt, sizeof(opt));
+#ifdef SO_NOSIGPIPE
+        setsockopt(fd_or_conv, SOL_SOCKET, SO_NOSIGPIPE, &opt, sizeof(opt));
+#endif
+        setnonblocking(fd_or_conv);
+
+        if (verbose) {
+            LOGI("accept a connection");
+        }
     }
 
-    server_t *server = new_server(serverfd, listener);
-    ev_io_start(EV_A_ & server->recv_ctx->io);
+    server_t *server = new_server(fd_or_conv, listener);
+    if (!server->kcp) ev_io_start(EV_A_ & server->recv_ctx->io);
     ev_timer_start(EV_A_ & server->recv_ctx->watcher);
 }
+
+/*Loki: kcp */
+static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user) {
+    server_t * server = user;
+	/* int nret = sendto(server->fd, buf, len, 0, (struct sockaddr *)&server->addr, server->addr_len); */
+	/* if (nret != 0) { */
+    /*     if (verbose) { */
+    /*         if (nret != len) { */
+    /*             LOGI("server[%d]: udp         >>> %d | %d", server->fd, nret, (len - nret)); */
+    /*         } */
+    /*         else { */
+    /*             LOGI("server[%d]: udp         >>> %d", server->fd, nret); */
+    /*         } */
+    /*     } */
+    /* } */
+	/* else { */
+    /*     LOGE("server[%d]: udp         >>> %d data error: %s", server->fd, len, strerror(errno)); */
+    /* } */
+
+	/* return nret; */
+    return 0;
+}
+
+static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents) {
+    server_t * server = watcher->data;
+    struct timeval ptv;
+    IUINT32 millisec;
+
+	gettimeofday(&ptv, NULL);
+
+    millisec = (IUINT32)(ptv.tv_usec / 1000) + (IUINT32)ptv.tv_sec * 1000;
+    ikcp_update(server->kcp, millisec);
+    //LOGI("XXXX: update, len=%d", (int)server->buf->len);
+
+    if (server->buf->len == 0) {
+        IO_START(server->recv_ctx->io, "server[%d]: udp [+ <<<] | update found cli send complete", server->fd_or_conv);
+    }        
+    
+    kcp_timer_reset(EV_A_ server);
+}
+
+static void kcp_timer_reset(EV_P_ server_t *server) {
+    TIMER_STOP(server->kcp_watcher, "server[%d]: kcp [- update]", server->fd_or_conv);
+
+    if (1) {
+        struct timeval ptv;
+        gettimeofday(&ptv, NULL);
+
+        IUINT32 current_ms  = (IUINT32)(ptv.tv_usec / 1000) + (IUINT32)ptv.tv_sec * 1000;
+        IUINT32 update_ms = ikcp_check(server->kcp, current_ms);
+
+        ev_timer_set(&server->kcp_watcher, (float)(update_ms - current_ms) / 1000.0f, 0);
+        TIMER_START(server->kcp_watcher, "");
+    }
+}
+
+/**/
 
 int
 main(int argc, char **argv)
