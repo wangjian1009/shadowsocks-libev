@@ -1667,7 +1667,11 @@ close_and_free_server(EV_P_ server_t *server)
             "listener[%d]: server[%d]: %s [- >>>] | server free",
             server->listen_ctx->fd, server->fd_or_conv, server->kcp ? "udp" : "tcp");
             
-        ev_timer_stop(EV_A_ & server->recv_ctx->watcher);
+        TIMER_STOP(
+            server->recv_ctx->watcher,
+            "listener[%d]: server[%d]: %s [- >>> timer] | server free",
+            server->listen_ctx->fd, server->fd_or_conv, server->kcp ? "udp" : "tcp");
+        
         if (!server->kcp) close(server->fd_or_conv);
         free_server(server);
         if (verbose) {
@@ -1723,7 +1727,10 @@ accept_cb(EV_P_ ev_io *w, int revents)
         server_t * server = kcp_find_server(conv);
         if (server == NULL) {
             server = new_server(conv, listener);
-            ev_timer_start(EV_A_ & server->recv_ctx->watcher);
+            TIMER_START(
+                server->recv_ctx->watcher,
+                "listener[%d]: server[%d]: udp [+ <<< timer]",
+                listener->fd, server->fd_or_conv);
         }
 
 		int nret = ikcp_send(server->kcp, buf, len);
@@ -1783,7 +1790,11 @@ accept_cb(EV_P_ ev_io *w, int revents)
             server->recv_ctx->io,
             "listener[%d]: server[%d]: tcp [+ >>>] | accept success",
             server->listen_ctx->fd, server->fd_or_conv);
-        ev_timer_start(EV_A_ & server->recv_ctx->watcher);
+
+        TIMER_START(
+            server->recv_ctx->watcher,
+            "listener[%d]: server[%d]: tcp [+ >>> timer] | accept success",
+            server->listen_ctx->fd, server->fd_or_conv);
     }
 }
 
@@ -2319,12 +2330,12 @@ main(int argc, char **argv)
 #ifndef __MINGW32__
     if (manager_addr != NULL) {
         ev_timer_init(&stat_update_watcher, stat_update_cb, UPDATE_INTERVAL, UPDATE_INTERVAL);
-        ev_timer_start(EV_DEFAULT, &stat_update_watcher);
+        TIMER_START(stat_update_watcher, "");
     }
 #endif
 
     ev_timer_init(&block_list_watcher, block_list_clear_cb, UPDATE_INTERVAL, UPDATE_INTERVAL);
-    ev_timer_start(EV_DEFAULT, &block_list_watcher);
+    TIMER_START(block_list_watcher, "");
 
 #ifndef __MINGW32__
     // setuid
@@ -2355,11 +2366,11 @@ main(int argc, char **argv)
 
 #ifndef __MINGW32__
     if (manager_addr != NULL) {
-        ev_timer_stop(EV_DEFAULT, &stat_update_watcher);
+        TIMER_STOP(stat_update_watcher, "");
     }
 #endif
 
-    ev_timer_stop(EV_DEFAULT, &block_list_watcher);
+    TIMER_STOP(block_list_watcher, "");
 
 #ifndef __MINGW32__
     if (plugin != NULL) {
