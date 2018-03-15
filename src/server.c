@@ -1031,7 +1031,10 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                     server->listen_ctx->fd, server->fd_or_conv);
             }
         } else {
-            ev_io_stop(EV_A_ & server->recv_ctx->io);
+            IO_STOP(
+                server->recv_ctx->io,
+                "listener[%d]: server[%d]: %s [- >>>] | resolve hostname begin",
+                server->listen_ctx->fd, server->fd_or_conv, server->kcp ? "udp" : "tcp");
 
             query_t *query = ss_malloc(sizeof(query_t));
             memset(query, 0, sizeof(query_t));
@@ -1052,8 +1055,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 static void
 server_send_cb(EV_P_ ev_io *w, int revents)
 {
-    server_ctx_t *server_send_ctx = (server_ctx_t *)w;
-    server_t *server              = server_send_ctx->server;
+    server_t *server              = ((server_ctx_t *)w)->server;
     remote_t *remote              = server->remote;
 
     assert(!server->kcp);
@@ -1093,7 +1095,14 @@ server_send_cb(EV_P_ ev_io *w, int revents)
             // all sent out, wait for reading
             server->buf->len = 0;
             server->buf->idx = 0;
-            ev_io_stop(EV_A_ & server_send_ctx->io);
+
+            if (!server->kcp) {
+                IO_STOP(
+                    server->send_ctx->io,
+                    "listener[%d]: server[%d]: tcp [+ <<<] | tcp cend complete",
+                    server->listen_ctx->fd, server->fd_or_conv);
+            }
+            
             if (remote != NULL) {
                 IO_START(
                     remote->recv_ctx->io,
@@ -1208,8 +1217,7 @@ resolv_cb(struct sockaddr *addr, void *data)
 static void
 remote_recv_cb(EV_P_ ev_io *w, int revents)
 {
-    remote_ctx_t *remote_recv_ctx = (remote_ctx_t *)w;
-    remote_t *remote              = remote_recv_ctx->remote;
+    remote_t *remote              = ((remote_ctx_t *)w)->remote;
     server_t *server              = remote->server;
 
     if (server == NULL) {
@@ -1282,10 +1290,14 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 // no data, wait for send
                 server->buf->idx = 0;
-                ev_io_stop(EV_A_ & remote_recv_ctx->io);
+                IO_STOP(remote->recv_ctx->io,
+                    "listener[%d]: server[%d]: remote [- <<<] | remote send would block",
+                    server->listen_ctx->fd, server->fd_or_conv);
+
+                assert(!server->kcp);
                 IO_START(
                     server->send_ctx->io,
-                    "listener[%d]: server[%d]: tcp [+ <<<] | tcp send would block",
+                    "listener[%d]: server[%d]: tcp [+ <<<] | remote send would block",
                     server->listen_ctx->fd, server->fd_or_conv);
             } else {
                 ERROR("remote_recv_send");
@@ -1296,7 +1308,13 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         } else if (s < server->buf->len) {
             server->buf->len -= s;
             server->buf->idx  = s;
-            ev_io_stop(EV_A_ & remote_recv_ctx->io);
+
+            IO_STOP(
+                remote->recv_ctx->io,
+                "listener[%d]: server[%d]: remote [- <<<] | tcp send in process",
+                server->listen_ctx->fd, server->fd_or_conv);
+
+            assert(!server->kcp);
             IO_START(
                 server->send_ctx->io,
                 "listener[%d]: server[%d]: tcp [+ <<<] | tcp send in process",
@@ -1316,8 +1334,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
 static void
 remote_send_cb(EV_P_ ev_io *w, int revents)
 {
-    remote_ctx_t *remote_send_ctx = (remote_ctx_t *)w;
-    remote_t *remote              = remote_send_ctx->remote;
+    remote_t *remote              = ((remote_ctx_t *)w)->remote;
     server_t *server              = remote->server;
 
     if (server == NULL) {
@@ -1326,7 +1343,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
         return;
     }
 
-    if (!remote_send_ctx->connected) {
+    if (!remote->send_ctx->connected) {
 #ifdef TCP_FASTOPEN_WINSOCK
         if (fast_open) {
             // Check if ConnectEx is done
@@ -1366,7 +1383,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
             if (verbose) {
                 LOGI("remote connected");
             }
-            remote_send_ctx->connected = 1;
+            remote->send_ctx->connected = 1;
 
             // Clear the state of this address in the block list
             assert(!server->kcp);
@@ -1374,11 +1391,17 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
 
             if (remote->buf->len == 0) {
                 server->stage = STAGE_STREAM;
-                ev_io_stop(EV_A_ & remote_send_ctx->io);
+                IO_STOP(
+                    remote->send_ctx->io,
+                    "listener[%d]: server[%d]: remote [- >>>] | remote getpeername success",
+                    server->listen_ctx->fd, server->fd_or_conv);
+
+                assert(!server->kcp);
                 IO_START(
                     server->recv_ctx->io,
                     "listener[%d]: server[%d]: tcp [+ >>>] | remote getpeername success",
                     server->listen_ctx->fd, server->fd_or_conv);
+
                 IO_START(
                     remote->recv_ctx->io,
                     "listener[%d]: server[%d]: remote [+ <<<] | remote getpeername success",
@@ -1423,12 +1446,20 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
             // all sent out, wait for reading
             remote->buf->len = 0;
             remote->buf->idx = 0;
-            ev_io_stop(EV_A_ & remote_send_ctx->io);
+
+            IO_STOP(
+                remote->send_ctx->io,
+                "listener[%d]: server[%d]: remote [- >>>] | remote send complete",
+                server->listen_ctx->fd, server->fd_or_conv);
+            
             if (server != NULL) {
-                IO_START(
-                    server->recv_ctx->io,
-                    "listener[%d]: server[%d]: %s [+ >>>] | remote send complete",
-                    server->listen_ctx->fd, server->fd_or_conv, server->kcp ? "udp" : "tcp");
+                if (!server->kcp) {
+                    IO_START(
+                        server->recv_ctx->io,
+                        "listener[%d]: server[%d]: tcp [+ >>>] | remote send complete",
+                        server->listen_ctx->fd, server->fd_or_conv);
+                }
+                
                 if (server->stage != STAGE_STREAM) {
                     server->stage = STAGE_STREAM;
                     IO_START(
@@ -1494,8 +1525,18 @@ static void
 close_and_free_remote(EV_P_ remote_t *remote)
 {
     if (remote != NULL) {
-        ev_io_stop(EV_A_ & remote->send_ctx->io);
-        ev_io_stop(EV_A_ & remote->recv_ctx->io);
+        server_t * server = remote->server;
+
+        IO_STOP(
+            remote->send_ctx->io,
+            "listener[%d]: server[%d]: remote [- >>>] | remote free",
+            server->listen_ctx->fd, server->fd_or_conv);
+        
+        IO_STOP(
+            remote->recv_ctx->io,
+            "listener[%d]: server[%d]: remote [- <<<] | remote free",
+            server->listen_ctx->fd, server->fd_or_conv);
+
         close(remote->fd);
         free_remote(remote);
         if (verbose) {
@@ -1615,8 +1656,17 @@ close_and_free_server(EV_P_ server_t *server)
             server->query->server = NULL;
             server->query         = NULL;
         }
-        ev_io_stop(EV_A_ & server->send_ctx->io);
-        ev_io_stop(EV_A_ & server->recv_ctx->io);
+
+        IO_STOP(
+            server->send_ctx->io,
+            "listener[%d]: server[%d]: %s [- <<<] | server free",
+            server->listen_ctx->fd, server->fd_or_conv, server->kcp ? "udp" : "tcp");
+
+        IO_STOP(
+            server->recv_ctx->io,
+            "listener[%d]: server[%d]: %s [- >>>] | server free",
+            server->listen_ctx->fd, server->fd_or_conv, server->kcp ? "udp" : "tcp");
+            
         ev_timer_stop(EV_A_ & server->recv_ctx->watcher);
         if (!server->kcp) close(server->fd_or_conv);
         free_server(server);
@@ -2243,7 +2293,7 @@ main(int argc, char **argv)
             listen_ctx->use_kcp = use_kcp;
 
             ev_io_init(&listen_ctx->io, accept_cb, listenfd, EV_READ);
-            IO_START(listen_ctx->io, "listener[%d]: +", listen_ctx->fd);
+            IO_START(listen_ctx->io, "listener[%d]: + listen", listen_ctx->fd);
 
             if (plugin != NULL)
                 break;
@@ -2324,7 +2374,7 @@ main(int argc, char **argv)
     for (int i = 0; i < server_num; i++) {
         listen_ctx_t *listen_ctx = &listen_ctx_list[i];
         if (mode != UDP_ONLY) {
-            ev_io_stop(loop, &listen_ctx->io);
+            IO_STOP(listen_ctx->io, "listener[%d]: - listen", listen_ctx->fd);
             close(listen_ctx->fd);
         }
         if (plugin != NULL)
