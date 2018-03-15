@@ -2137,7 +2137,7 @@ main(int argc, char **argv)
             if (use_kcp) {
                 listenfd = create_and_bind(SOCK_DGRAM, host, server_port, mptcp);
                 if (listenfd == -1) {
-                    FATAL("bind() error");
+                    FATAL("create() error");
                 }
                 setfastopen(listenfd);
             }
