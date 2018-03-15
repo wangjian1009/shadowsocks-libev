@@ -144,6 +144,15 @@ static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user);
 static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents);
 static void kcp_timer_reset(EV_P_ remote_t *remote);
 
+
+#define IO_START(__h, __msg, args...)           \
+    do {                                        \
+        if (verbose && !ev_is_active(&__h)) {   \
+            LOGI(__msg, ##args );               \
+        }                                       \
+        ev_io_start(EV_A_ & __h);               \
+    } while(0)
+
 #define IO_STOP(__h, __msg, args...)            \
     do {                                        \
         if (verbose && ev_is_active(&__h)) {    \
@@ -152,12 +161,20 @@ static void kcp_timer_reset(EV_P_ remote_t *remote);
         ev_io_stop(EV_A_ & __h);                \
     } while(0)
 
-#define IO_START(__h, __msg, args...)           \
+#define TIMER_START(__h, __msg, args...)        \
     do {                                        \
         if (verbose && !ev_is_active(&__h)) {   \
             LOGI(__msg, ##args );               \
         }                                       \
-        ev_io_start(EV_A_ & __h);               \
+        ev_timer_start(EV_A_ & __h);            \
+    } while(0)
+
+#define TIMER_STOP(__h, __msg, args...)         \
+    do {                                        \
+        if (verbose && ev_is_active(&__h)) {    \
+            LOGI(__msg, ##args );               \
+        }                                       \
+        ev_timer_stop(EV_A_ & __h);             \
     } while(0)
 
 /**/
@@ -296,7 +313,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     buffer_t *buf;
     ssize_t r;
 
-    ev_timer_stop(EV_A_ & server->delayed_connect_watcher);
+    TIMER_STOP(server->delayed_connect_watcher, "server[%d]: tcp [- delay connect]", server->fd);
 
     if (remote == NULL) {
         buf = server->buf;
@@ -398,7 +415,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                     // wait on remote connected event
                     IO_STOP(server_recv_ctx->io, "server[%d]: cli [- >>>] | remote connect in process", server->fd);
                     if (!remote->kcp) IO_START(remote->send_ctx->io, "server[%d]: tcp [+ >>>] | remote connect in process", server->fd);
-                    ev_timer_start(EV_A_ & remote->send_ctx->watcher);
+                    TIMER_START(remote->send_ctx->watcher, "server[%d]: %s: [+ timeout]", server->fd, remote->kcp ? "udp" : "tcp");
                 } else {
 #if defined(MSG_FASTOPEN) && !defined(TCP_FASTOPEN_CONNECT)
                     int s = -1;
@@ -498,7 +515,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
                         IO_STOP(server_recv_ctx->io, "server[%d]: cli [- >>>] | send to remote in process", server->fd);
                         if (!remote->kcp) IO_START(remote->send_ctx->io, "server[%d]: tcp [+ >>>] | send to remote in process", server->fd);
-                        ev_timer_start(EV_A_ & remote->send_ctx->watcher);
+                        TIMER_START(remote->send_ctx->watcher, "server[%d]: %s [+ timeout] | send to remote in process", server->fd, remote->kcp ? "udp" : "tcp");
                         return;
                     }
                 }
@@ -730,7 +747,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                                                      buf->len - 3 - abuf->len, &hostname);
                 if (ret == -1 && buf->len < BUF_SIZE && server->stage != STAGE_SNI) {
                     server->stage = STAGE_SNI;
-                    ev_timer_start(EV_A_ & server->delayed_connect_watcher);
+                    TIMER_START(server->delayed_connect_watcher, "server[%d]: tcp [+ delay connect]", server->fd);
                     return;
                 } else if (ret > 0) {
                     sni_detected = 1;
@@ -873,7 +890,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             if (buf->len > 0 || sni_detected) {
                 continue;
             } else {
-                ev_timer_start(EV_A_ & server->delayed_connect_watcher);
+                TIMER_START(server->delayed_connect_watcher, "server[%d]: tcp [+ delay connect]", server->fd);
             }
 
             return;
@@ -1153,8 +1170,8 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
         int r         = getpeername(remote->fd, (struct sockaddr *)&addr, &len);
         if (r == 0) {
             remote->send_ctx->connected = 1;
-            ev_timer_stop(EV_A_ & remote->send_ctx->watcher);
-            ev_timer_start(EV_A_ & remote->recv_ctx->watcher);
+            TIMER_STOP(remote->send_ctx->watcher, "server[%d]: tcp [+ >>> timeout]", server->fd);
+            TIMER_START(remote->recv_ctx->watcher, "server[%d]: tcp [+ <<< timeout]", server->fd);
             IO_START(remote->recv_ctx->io, "server[%d]: tcp [+ >>>] | getpeername complete", server->fd);
 
             // no need to send any data
@@ -1281,11 +1298,11 @@ close_and_free_remote(EV_P_ remote_t *remote)
 {
     if (remote != NULL) {
         /*Loki: kcp*/
-        ev_timer_stop(EV_A_ & remote->kcp_watcher);
+        TIMER_STOP(remote->kcp_watcher, "server[%d]: kcp [- update]", remote->server->fd);
         /*kcp*/
         
-        ev_timer_stop(EV_A_ & remote->send_ctx->watcher);
-        ev_timer_stop(EV_A_ & remote->recv_ctx->watcher);
+        TIMER_STOP(remote->send_ctx->watcher, "server[%d]: %s [- >>> timeout]", remote->server->fd, remote->kcp ? "udp" : "tcp");
+        TIMER_STOP(remote->recv_ctx->watcher, "server[%d]: %s [- <<< timeout]", remote->server->fd, remote->kcp ? "udp" : "tcp");
         IO_STOP(remote->send_ctx->io, "server[%d]: %s [- >>>] | remote free", remote->server->fd, remote->kcp ? "udp" : "tcp");
         IO_STOP(remote->recv_ctx->io, "server[%d]: %s [- <<<] | remote free", remote->server->fd, remote->kcp ? "udp" : "tcp");
         close(remote->fd);
@@ -1371,7 +1388,7 @@ close_and_free_server(EV_P_ server_t *server)
     if (server != NULL) {
         IO_STOP(server->send_ctx->io, "server[%d]: cli [- <<<] | server free", server->fd);
         IO_STOP(server->recv_ctx->io, "server[%d]: cli [- >>>] | server free", server->fd);
-        ev_timer_stop(EV_A_ & server->delayed_connect_watcher);
+        TIMER_STOP(server->delayed_connect_watcher, "server[%d]: tcp [- delay connect]", server->fd);
         close(server->fd);
         free_server(server);
     }
@@ -1559,16 +1576,18 @@ static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents) {
 }
 
 static void kcp_timer_reset(EV_P_ remote_t *remote) {
+    server_t * server = remote->server;
+    
     struct timeval ptv;
 	gettimeofday(&ptv, NULL);
 
     IUINT32 current_ms  = (IUINT32)(ptv.tv_usec / 1000) + (IUINT32)ptv.tv_sec * 1000;
     IUINT32 update_ms = ikcp_check(remote->kcp, current_ms);
 
-    ev_timer_stop(EV_A_ & remote->kcp_watcher);
+    TIMER_STOP(remote->kcp_watcher, "server[%d]: kcp [- update]", server->fd);
 
     ev_timer_set(&remote->kcp_watcher, (float)(update_ms - current_ms) / 1000.0f, 0);
-    ev_timer_start(EV_A_ & remote->kcp_watcher);
+    TIMER_START(remote->kcp_watcher, "server[%d]: kcp [+ update]", server->fd);
 }
 
 /**/
@@ -1619,8 +1638,8 @@ main(int argc, char **argv)
         { "plugin-opts", required_argument, NULL, GETOPT_VAL_PLUGIN_OPTS },
         { "password",    required_argument, NULL, GETOPT_VAL_PASSWORD    },
         { "key",         required_argument, NULL, GETOPT_VAL_KEY         },
-        { "kcp",         no_argument,       NULL, GETOPT_VAL_KCP         },
         { "help",        no_argument,       NULL, GETOPT_VAL_HELP        },
+        { "kcp",         no_argument,       NULL, GETOPT_VAL_KCP         },
         { NULL,                          0, NULL,                      0 }
     };
 
