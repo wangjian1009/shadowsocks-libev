@@ -340,7 +340,7 @@ setnonblocking(int fd)
 #endif
 
 int
-create_and_bind(const char *host, const char *port, int mptcp)
+create_and_bind(int socktype, const char *host, const char *port, int mptcp)
 {
     struct addrinfo hints;
     struct addrinfo *result, *rp, *ipv4v6bindall;
@@ -348,7 +348,7 @@ create_and_bind(const char *host, const char *port, int mptcp)
 
     memset(&hints, 0, sizeof(struct addrinfo));
     hints.ai_family   = AF_UNSPEC;               /* Return IPv4 and IPv6 choices */
-    hints.ai_socktype = SOCK_STREAM;             /* We want a TCP socket */
+    hints.ai_socktype = socktype;             /* We want a TCP socket */
     hints.ai_flags    = AI_PASSIVE | AI_ADDRCONFIG; /* For wildcard IP address */
     hints.ai_protocol = IPPROTO_TCP;
 
@@ -418,7 +418,7 @@ create_and_bind(const char *host, const char *port, int mptcp)
             }
         }
 
-        if (mptcp == 1) {
+        if (mptcp == 1 && socktype == SOCK_STREAM) {
             int i = 0;
             while ((mptcp = mptcp_enabled_values[i]) > 0) {
                 int err = setsockopt(listen_sock, IPPROTO_TCP, mptcp, &opt, sizeof(opt));
@@ -1569,6 +1569,7 @@ main(int argc, char **argv)
     int pid_flags   = 0;
     int mptcp       = 0;
     int mtu         = 0;
+    uint8_t use_kcp = 0;
     char *user      = NULL;
     char *password  = NULL;
     char *key       = NULL;
@@ -1603,6 +1604,7 @@ main(int argc, char **argv)
         { "plugin-opts",     required_argument, NULL, GETOPT_VAL_PLUGIN_OPTS },
         { "password",        required_argument, NULL, GETOPT_VAL_PASSWORD    },
         { "key",             required_argument, NULL, GETOPT_VAL_KEY         },
+        { "kcp",             required_argument, NULL, GETOPT_VAL_KCP         },
 #ifdef __linux__
         { "mptcp",           no_argument,       NULL, GETOPT_VAL_MPTCP       },
 #endif
@@ -1622,6 +1624,10 @@ main(int argc, char **argv)
         case GETOPT_VAL_NODELAY:
             no_delay = 1;
             LOGI("enable TCP no-delay");
+            break;
+        case GETOPT_VAL_KCP:
+            use_kcp = 1;
+            LOGI("enable KCP");
             break;
         case GETOPT_VAL_ACL:
             LOGI("initializing acl...");
@@ -1951,14 +1957,24 @@ main(int argc, char **argv)
 
             // Bind to port
             int listenfd;
-            listenfd = create_and_bind(host, server_port, mptcp);
-            if (listenfd == -1) {
-                FATAL("bind() error");
+
+            if (use_kcp) {
+                listenfd = create_and_bind(SOCK_DGRAM, host, server_port, mptcp);
+                if (listenfd == -1) {
+                    FATAL("bind() error");
+                }
+                setfastopen(listenfd);
             }
-            if (listen(listenfd, SSMAXCONN) == -1) {
-                FATAL("listen() error");
+            else {
+                listenfd = create_and_bind(SOCK_STREAM, host, server_port, mptcp);
+                if (listenfd == -1) {
+                    FATAL("bind() error");
+                }
+                if (listen(listenfd, SSMAXCONN) == -1) {
+                    FATAL("listen() error");
+                }
+                setfastopen(listenfd);
             }
-            setfastopen(listenfd);
             setnonblocking(listenfd);
             listen_ctx_t *listen_ctx = &listen_ctx_list[i];
 
@@ -1967,6 +1983,7 @@ main(int argc, char **argv)
             listen_ctx->fd      = listenfd;
             listen_ctx->iface   = iface;
             listen_ctx->loop    = loop;
+            listen_ctx->use_kcp = use_kcp;
 
             ev_io_init(&listen_ctx->io, accept_cb, listenfd, EV_READ);
             ev_io_start(loop, &listen_ctx->io);
