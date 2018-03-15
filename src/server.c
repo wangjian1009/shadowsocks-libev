@@ -117,6 +117,7 @@ static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user);
 static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents);
 static void kcp_timer_reset(EV_P_ server_t *server);
 static void kcp_forward_data(server_t  * server);
+static server_t * kcp_find_server(int conv);
 /**/
 
 #define IO_START(__h, __msg, args...)           \
@@ -824,7 +825,9 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 // no data, wait for send
                 remote->buf->idx = 0;
                 ev_io_stop(EV_A_ & server_recv_ctx->io);
-                ev_io_start(EV_A_ & remote->send_ctx->io);
+                IO_START(
+                    remote->send_ctx->io, "listener[%d]: server[%d]: tcp [+ >>>] | send would block",
+                    server->listen_ctx->fd, server->fd_or_conv);
             } else {
                 ERROR("server_recv_send");
                 close_and_free_remote(EV_A_ remote);
@@ -834,7 +837,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             remote->buf->len -= s;
             remote->buf->idx  = s;
             ev_io_stop(EV_A_ & server_recv_ctx->io);
-            ev_io_start(EV_A_ & remote->send_ctx->io);
+            IO_START(remote->send_ctx->io, "listener[%d]: server[%d]: tcp [+ >>>] | send in process",
+                     server->listen_ctx->fd, server->fd_or_conv);
         }
         return;
     } else if (server->stage == STAGE_INIT) {
@@ -1007,7 +1011,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
                 // waiting on remote connected event
                 ev_io_stop(EV_A_ & server_recv_ctx->io);
-                ev_io_start(EV_A_ & remote->send_ctx->io);
+                IO_START(remote->send_ctx->io, "listener[%d]: server[%d]: remote [+ >>>] | connect begin",
+                         server->listen_ctx->fd, server->fd_or_conv);
             }
         } else {
             ev_io_stop(EV_A_ & server_recv_ctx->io);
@@ -1074,7 +1079,8 @@ server_send_cb(EV_P_ ev_io *w, int revents)
             server->buf->idx = 0;
             ev_io_stop(EV_A_ & server_send_ctx->io);
             if (remote != NULL) {
-                ev_io_start(EV_A_ & remote->recv_ctx->io);
+                IO_START(remote->recv_ctx->io, "listener[%d]: server[%d]: remote [+ <<<] | tcp cend complete",
+                         server->listen_ctx->fd, server->fd_or_conv);
                 return;
             } else {
                 LOGE("invalid remote");
@@ -1232,6 +1238,21 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     setTosFromConnmark(remote, server);
 #endif
     if (server->kcp) {
+        int nret = ikcp_input(server->kcp, server->buf->data, server->buf->len);
+        if (nret < 0) {
+            if (verbose) {
+                LOGE("listen[%d]: server[%d]: kcp     <<< error, rv=%d", server->listen_ctx->fd, server->fd_or_conv, nret);
+            }
+            ERROR("kcp_input_error");
+            close_and_free_remote(EV_A_ remote);
+            close_and_free_server(EV_A_ server);
+            return;
+        }
+        if (verbose) {
+            LOGI("listen[%d]: server[%d]: kcp     <<< %d", server->listen_ctx->fd, server->fd_or_conv, nret);
+        }
+
+        kcp_forward_data(server);
     }
     else {
         int s = send(server->fd_or_conv, server->buf->data, server->buf->len, 0);
@@ -1241,7 +1262,8 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
                 // no data, wait for send
                 server->buf->idx = 0;
                 ev_io_stop(EV_A_ & remote_recv_ctx->io);
-                ev_io_start(EV_A_ & server->send_ctx->io);
+                IO_START(server->send_ctx->io, "listener[%d]: server[%d]: tcp [+ <<<] | tcp send would block",
+                         server->listen_ctx->fd, server->fd_or_conv);
             } else {
                 ERROR("remote_recv_send");
                 close_and_free_remote(EV_A_ remote);
@@ -1252,7 +1274,8 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
             server->buf->len -= s;
             server->buf->idx  = s;
             ev_io_stop(EV_A_ & remote_recv_ctx->io);
-            ev_io_start(EV_A_ & server->send_ctx->io);
+            IO_START(server->send_ctx->io, "listener[%d]: server[%d]: tcp [+ <<<] | tcp send in process",
+                     server->listen_ctx->fd, server->fd_or_conv);
         }
     }
 
@@ -1610,29 +1633,20 @@ accept_cb(EV_P_ ev_io *w, int revents)
         
         int conv = ikcp_getconv(buf);
 
-        server_t * server = NULL;
-
-        struct cork_dllist_item *curr, *next;
-        cork_dllist_foreach_void(&connections, curr, next) {
-            server_t * check_server = cork_container_of(curr, server_t, entries);
-            if (check_server->kcp && check_server->kcp->conv == conv) {
-                server = check_server;
-            }
-        }
-
+        server_t * server = kcp_find_server(conv);
         if (server == NULL) {
             server = new_server(conv, listener);
             ev_timer_start(EV_A_ & server->recv_ctx->watcher);
         }
 
-		int nret = ikcp_input(server->kcp, buf, len);
+		int nret = ikcp_send(server->kcp, buf, len);
 		if (nret < 0) {
-			LOGE("listener[%d]: server[%d]: ikcp     >>> error(%d)", listener->fd, server->fd_or_conv, nret);
+			LOGE("listener[%d]: server[%d]: kcp     >>> error(%d)", listener->fd, server->fd_or_conv, nret);
             return;
 		}
 
         if (verbose) {
-			LOGI("listener[%d]: server[%d]: ikcp     >>> %d", listener->fd, server->fd_or_conv, nret);
+			LOGI("listener[%d]: server[%d]: kcp     >>> %d", listener->fd, server->fd_or_conv, nret);
         }
     }
     else {
@@ -1745,17 +1759,26 @@ static void kcp_forward_data(server_t  * server)
 		int nrecv = ikcp_recv(server->kcp, obuf, sizeof(obuf));
 		if (nrecv < 0) {
 			if (nrecv == -3) {
-				LOGE("listener[%d]: server[%d]: kcp    <<< error | obuf is small, need to extend it", server->listen_ctx->fd, server->fd_or_conv);
+				LOGE("listener[%d]: server[%d]: kcp recv error, obuf is small, need to extend it", server->listen_ctx->fd, server->fd_or_conv);
             }
 			break;
 		}
 
-        LOGE("listener[%d]: server[%d]: kcp    <<< %d", server->listen_ctx->fd, server->fd_or_conv, nrecv);
 		/* if (task->bev) */
 		/* 	evbuffer_add(bufferevent_get_output(task->bev), obuf, nrecv); */
 		/* else */
 		/* 	debug(LOG_INFO, "this task has finished"); */
 	}
+}
+
+static server_t * kcp_find_server(int conv) {
+    struct cork_dllist_item *curr, *next;
+    cork_dllist_foreach_void(&connections, curr, next) {
+        server_t * server = cork_container_of(curr, server_t, entries);
+        if (server->kcp && server->fd_or_conv == conv) return server;
+    }
+
+    return NULL;
 }
 
 /**/
