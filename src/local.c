@@ -152,6 +152,14 @@ static void kcp_timer_reset(EV_P_ remote_t *remote);
         ev_io_stop(EV_A_ & __h);                \
     } while(0)
 
+#define IO_START(__h, __msg, args...)           \
+    do {                                        \
+        if (verbose && !ev_is_active(&__h)) {   \
+            LOGI(__msg, ##args );               \
+        }                                       \
+        ev_io_start(EV_A_ & __h);               \
+    } while(0)
+
 /**/
 
 static struct cork_dllist connections;
@@ -388,8 +396,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                     }
 
                     // wait on remote connected event
-                    IO_STOP(server_recv_ctx->io, "server[%d]: cli [- >>>] | wait for connect to remote", server->fd);
-                    if (!remote->kcp) ev_io_start(EV_A_ & remote->send_ctx->io);
+                    IO_STOP(server_recv_ctx->io, "server[%d]: cli [- >>>] | remote connect in process", server->fd);
+                    if (!remote->kcp) IO_START(remote->send_ctx->io, "server[%d]: tcp [+ >>>] | remote connect in process", server->fd);
                     ev_timer_start(EV_A_ & remote->send_ctx->watcher);
                 } else {
 #if defined(MSG_FASTOPEN) && !defined(TCP_FASTOPEN_CONNECT)
@@ -469,7 +477,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                             // in progress, wait until connected
                             remote->buf->idx = 0;
                             IO_STOP(server_recv_ctx->io, "server[%d]: cli [- >>>] | connect in process", server->fd);
-                            if (!remote->kcp) ev_io_start(EV_A_ & remote->send_ctx->io);
+                            if (!remote->kcp) IO_START(remote->send_ctx->io, "server[%d]: tcp [+ >>>] | connect in process", server->fd);
                             return;
                         } else {
                             if (errno == EOPNOTSUPP || errno == EPROTONOSUPPORT ||
@@ -489,7 +497,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                         remote->buf->idx  = s;
 
                         IO_STOP(server_recv_ctx->io, "server[%d]: cli [- >>>] | send to remote in process", server->fd);
-                        if (!remote->kcp) ev_io_start(EV_A_ & remote->send_ctx->io);
+                        if (!remote->kcp) IO_START(remote->send_ctx->io, "server[%d]: tcp [+ >>>] | send to remote in process", server->fd);
                         ev_timer_start(EV_A_ & remote->send_ctx->watcher);
                         return;
                     }
@@ -501,7 +509,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                         // no data, wait for send
                         remote->buf->idx = 0;
                         IO_STOP(server_recv_ctx->io, "server[%d]: cli [- >>>] | send to remote block", server->fd);
-                        if (!remote->kcp) ev_io_start(EV_A_ & remote->send_ctx->io);
+                        if (!remote->kcp) IO_START(remote->send_ctx->io, "server[%d]: tcp [+ >>>] | send to remote block", server->fd);
                         return;
                     } else {
                         ERROR("server_recv_cb_send");
@@ -513,7 +521,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                     remote->buf->len -= s;
                     remote->buf->idx  = s;
                     IO_STOP(server_recv_ctx->io, "server[%d]: cli [- >>>] | send to remote in process", server->fd);
-                    if (!remote->kcp) ev_io_start(EV_A_ & remote->send_ctx->io);
+                    if (!remote->kcp) IO_START(remote->send_ctx->io, "server[%d]: tcp [+ >>>] | send to remote in process", server->fd);
                     return;
                 } else {
                     remote->buf->idx = 0;
@@ -911,14 +919,13 @@ server_send_cb(EV_P_ ev_io *w, int revents)
             // all sent out, wait for reading
             server->buf->len = 0;
             server->buf->idx = 0;
-            IO_STOP(server_send_ctx->io, "server[%d]: cli [- <<<] | no data", server->fd);
-            ev_io_start(EV_A_ & remote->recv_ctx->io);
+            IO_STOP(server_send_ctx->io, "server[%d]: cli [- <<<] | cli response no data", server->fd);
+            IO_START(remote->recv_ctx->io, "server[%d]: %s [+ <<<] | cli response no data", server->fd, remote->kcp ? "udp" : "tcp");
 
             if (verbose) {
                 LOGI("server[%d]: cli <<< %d", server->fd, (int)s);
             }
             
-            LOGI("remote: start watch in server send");
             return;
         }
     }
@@ -1063,7 +1070,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
             // no data, wait for send
             server->buf->idx = 0;
             IO_STOP(remote_recv_ctx->io, "server[%d]: %s [- <<<] | cli send block", server->fd, remote->kcp ? "udp" : "tcp");
-            ev_io_start(EV_A_ & server->send_ctx->io);
+            IO_START(server->send_ctx->io, "server[%d]: cli [+ <<<] | cli send block", server->fd);
         } else {
             ERROR("remote_recv_cb_send");
             close_and_free_remote(EV_A_ remote);
@@ -1079,7 +1086,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         }
 
         IO_STOP(remote_recv_ctx->io, "server[%d]: %s [- <<<] | cli send in process", server->fd, remote->kcp ? "udp" : "tcp");
-        ev_io_start(EV_A_ & server->send_ctx->io);
+        IO_START(server->send_ctx->io, "server[%d]: cli [+ <<<] | cli send in process", server->fd);
     }
     else {
         server->buf->len = 0;
@@ -1148,13 +1155,12 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
             remote->send_ctx->connected = 1;
             ev_timer_stop(EV_A_ & remote->send_ctx->watcher);
             ev_timer_start(EV_A_ & remote->recv_ctx->watcher);
-            ev_io_start(EV_A_ & remote->recv_ctx->io);
-            LOGI("remote: start watch for get peername");
+            IO_START(remote->recv_ctx->io, "server[%d]: tcp [+ >>>] | getpeername complete", server->fd);
 
             // no need to send any data
             if (remote->buf->len == 0) {
-                IO_STOP(remote->send_ctx->io, "servre[%d]: %s [- >>>] | no data", server->fd, remote->kcp ? "udp" : "tcp");
-                ev_io_start(EV_A_ & server->recv_ctx->io);
+                IO_STOP(remote->send_ctx->io, "servre[%d]: tcp [- >>>] | cli no data", server->fd);
+                IO_START(server->recv_ctx->io, "server[%d]: cli [+ >>>] | cli no data", server->fd);
                 return;
             }
         } else {
@@ -1193,8 +1199,8 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
             // all sent out, wait for reading
             remote->buf->len = 0;
             remote->buf->idx = 0;
-            IO_STOP(remote->send_ctx->io, "server[%d]: %s [- >>>] | no data", server->fd, remote->kcp ? "udp" : "tcp");
-            ev_io_start(EV_A_ & server->recv_ctx->io);
+            IO_STOP(remote->send_ctx->io, "server[%d]: tcp [- >>>] | remote send complete", server->fd);
+            IO_START(server->recv_ctx->io, "server[%d]: cli [+ >>>] | remote send complete", server->fd);
         }
     }
 }
@@ -1487,7 +1493,7 @@ accept_cb(EV_P_ ev_io *w, int revents)
     server_t *server = new_server(serverfd);
     server->listener = listener;
 
-    ev_io_start(EV_A_ & server->recv_ctx->io);
+    IO_START(server->recv_ctx->io, "server[%d]: listen +", server->fd);
 }
 
 /*Loki: kcp */
@@ -1502,8 +1508,7 @@ static ssize_t send_to_remote(EV_P_ remote_t *remote, const void *buffer, size_t
         
         kcp_timer_reset(EV_A_ remote);
         if (remote->server->buf->len == 0 && !ev_is_active(& remote->recv_ctx->io)) {
-            ev_io_start(EV_A_ & remote->recv_ctx->io);
-            LOGI("XXXXX: start watch in send to remote");
+            IO_START(remote->recv_ctx->io, "server[%d]: udp [+ <<<] | kcp send found cli send complete", server->fd);
         }
 
         return kcp_r;
@@ -1546,9 +1551,8 @@ static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents) {
     ikcp_update(remote->kcp, millisec);
     //LOGI("XXXX: update, len=%d", (int)server->buf->len);
 
-    if (server->buf->len == 0 && !ev_is_active(& remote->recv_ctx->io)) {
-        ev_io_start(EV_A_ & remote->recv_ctx->io);
-        LOGI("XXXX: remote: start watch in update");
+    if (server->buf->len == 0) {
+        IO_START(remote->recv_ctx->io, "server[%d]: udp [+ <<<] | update found cli send complete", server->fd);
     }        
     
     kcp_timer_reset(EV_A_ remote);
@@ -1996,7 +2000,7 @@ main(int argc, char **argv)
         listen_ctx.fd = listenfd;
 
         ev_io_init(&listen_ctx.io, accept_cb, listenfd, EV_READ);
-        ev_io_start(loop, &listen_ctx.io);
+        IO_START(listen_ctx.io, "listen +");
     }
 
     // Setup UDP
@@ -2174,7 +2178,7 @@ _start_ss_local_server(profile_t profile, ss_local_callback callback, void *udat
         listen_ctx.fd = listenfd;
 
         ev_io_init(&listen_ctx.io, accept_cb, listenfd, EV_READ);
-        ev_io_start(loop, &listen_ctx.io);
+        IO_START(listen_ctx.io, "listen +");
     }
 
     // Setup UDP
