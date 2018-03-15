@@ -49,6 +49,7 @@ typedef struct listen_ctx {
     int timeout;
     int fd;
     int mptcp;
+    uint8_t use_kcp;
     struct sockaddr **remote_addr;
 } listen_ctx_t;
 

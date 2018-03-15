@@ -1356,7 +1356,6 @@ create_remote(listen_ctx_t *listener,
               struct sockaddr *addr)
 {
     struct sockaddr *remote_addr;
-    uint8_t use_kcp = 1;
 
     int index = rand() % listener->remote_num;
     if (addr == NULL) {
@@ -1366,7 +1365,7 @@ create_remote(listen_ctx_t *listener,
     }
 
     int remotefd;
-    if (use_kcp) {
+    if (listener->use_kcp) {
         remotefd = socket(AF_INET, SOCK_DGRAM, 0);
         if (remotefd == -1) {
             ERROR("socket");
@@ -1415,7 +1414,7 @@ create_remote(listen_ctx_t *listener,
     }
 #endif
 
-    remote_t *remote = new_remote(remotefd, listener->timeout, use_kcp);
+    remote_t *remote = new_remote(remotefd, listener->timeout, listener->use_kcp);
     remote->addr_len = get_sockaddr_len(remote_addr);
     memcpy(&(remote->addr), remote_addr, remote->addr_len);
 
@@ -1553,6 +1552,7 @@ main(int argc, char **argv)
     int pid_flags    = 0;
     int mtu          = 0;
     int mptcp        = 0;
+    uint8_t use_kcp  = 0;
     char *user       = NULL;
     char *local_port = NULL;
     char *local_addr = NULL;
@@ -1590,6 +1590,7 @@ main(int argc, char **argv)
         { "plugin-opts", required_argument, NULL, GETOPT_VAL_PLUGIN_OPTS },
         { "password",    required_argument, NULL, GETOPT_VAL_PASSWORD    },
         { "key",         required_argument, NULL, GETOPT_VAL_KEY         },
+        { "kcp",         no_argument,       NULL, GETOPT_VAL_KCP         },
         { "help",        no_argument,       NULL, GETOPT_VAL_HELP        },
         { NULL,                          0, NULL,                      0 }
     };
@@ -1624,6 +1625,10 @@ main(int argc, char **argv)
         case GETOPT_VAL_NODELAY:
             no_delay = 1;
             LOGI("enable TCP no-delay");
+            break;
+        case GETOPT_VAL_KCP:
+            use_kcp = 1;
+            LOGI("enable KCP");
             break;
         case GETOPT_VAL_PLUGIN:
             plugin = optarg;
@@ -1928,6 +1933,7 @@ main(int argc, char **argv)
     listen_ctx.timeout = atoi(timeout);
     listen_ctx.iface   = iface;
     listen_ctx.mptcp   = mptcp;
+    listen_ctx.use_kcp = use_kcp;
 
     // Setup signal handler
     ev_signal_init(&sigint_watcher, signal_cb, SIGINT);
