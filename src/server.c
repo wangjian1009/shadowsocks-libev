@@ -1593,26 +1593,61 @@ static void
 accept_cb(EV_P_ ev_io *w, int revents)
 {
     listen_ctx_t *listener = (listen_ctx_t *)w;
-    int fd_or_conv;
 
     if (listener->use_kcp) {
-        fd_or_conv = -1;
+        struct sockaddr_in clientaddr;
+        int clientlen = sizeof(clientaddr);
+        memset(&clientaddr, 0, clientlen);
+	
+        char buf[2048] = {0};
+        int len = recvfrom(listener->fd, buf, sizeof(buf) - 1, 0, (struct sockaddr *) &clientaddr, (socklen_t*)&clientlen);
+        if (len < 0) {
+            LOGE("listener[%d]: udp >>> error | %s", listener->fd, strerror(errno));
+            return;
+        }	
+        
+        int conv = ikcp_getconv(buf);
+
+        server_t * server = NULL;
+
+        struct cork_dllist_item *curr, *next;
+        cork_dllist_foreach_void(&connections, curr, next) {
+            server_t * check_server = cork_container_of(curr, server_t, entries);
+            if (check_server->kcp && check_server->kcp->conv == conv) {
+                server = check_server;
+            }
+        }
+
+        if (server == NULL) {
+            server = new_server(conv, listener);
+            ev_timer_start(EV_A_ & server->recv_ctx->watcher);
+        }
+
+		int nret = ikcp_input(server->kcp, buf, len);
+		if (nret < 0) {
+			LOGE("listener[%d]: server[%d]: ikcp     >>> error(%d)", listener->fd, server->fd_or_conv, nret);
+            return;
+		}
+
+        if (verbose) {
+			LOGI("listener[%d]: server[%d]: ikcp     >>> %d", listener->fd, server->fd_or_conv, nret);
+        }
     }
     else {
-        fd_or_conv = accept(listener->fd, NULL, NULL);
-        if (fd_or_conv == -1) {
+        int fd = accept(listener->fd, NULL, NULL);
+        if (fd == -1) {
             ERROR("accept");
             return;
         }
 
-        char *peer_name = get_peer_name(fd_or_conv);
+        char *peer_name = get_peer_name(fd);
         if (peer_name != NULL) {
             int in_white_list = 0;
             if (acl) {
                 if ((get_acl_mode() == BLACK_LIST && acl_match_host(peer_name) == 1)
                     || (get_acl_mode() == WHITE_LIST && acl_match_host(peer_name) >= 0)) {
                     LOGE("Access denied from %s", peer_name);
-                    close(fd_or_conv);
+                    close(fd);
                     return;
                 } else if (acl_match_host(peer_name) == -1) {
                     in_white_list = 1;
@@ -1622,28 +1657,28 @@ accept_cb(EV_P_ ev_io *w, int revents)
                 && check_block_list(peer_name)) {
                 LOGE("block all requests from %s", peer_name);
 #ifdef __linux__
-                set_linger(fd_or_conv);
+                set_linger(fd);
 #endif
-                close(fd_or_conv);
+                close(fd);
                 return;
             }
         }
 
         int opt = 1;
-        setsockopt(fd_or_conv, SOL_TCP, TCP_NODELAY, &opt, sizeof(opt));
+        setsockopt(fd, SOL_TCP, TCP_NODELAY, &opt, sizeof(opt));
 #ifdef SO_NOSIGPIPE
-        setsockopt(fd_or_conv, SOL_SOCKET, SO_NOSIGPIPE, &opt, sizeof(opt));
+        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &opt, sizeof(opt));
 #endif
-        setnonblocking(fd_or_conv);
+        setnonblocking(fd);
 
         if (verbose) {
             LOGI("accept a connection");
         }
-    }
 
-    server_t *server = new_server(fd_or_conv, listener);
-    if (!server->kcp) ev_io_start(EV_A_ & server->recv_ctx->io);
-    ev_timer_start(EV_A_ & server->recv_ctx->watcher);
+        server_t *server = new_server(fd, listener);
+        ev_io_start(EV_A_ & server->recv_ctx->io);
+        ev_timer_start(EV_A_ & server->recv_ctx->watcher);
+    }
 }
 
 /*Loki: kcp */
