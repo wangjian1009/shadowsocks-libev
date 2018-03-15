@@ -112,10 +112,12 @@ static void close_and_free_server(EV_P_ server_t *server);
 static void resolv_cb(struct sockaddr *addr, void *data);
 static void resolv_free_cb(void *data);
 
-/**/
+/*Loki: kcp */
 static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user);
 static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents);
 static void kcp_timer_reset(EV_P_ server_t *server);
+static void kcp_forward_data(server_t  * server);
+/**/
 
 #define IO_START(__h, __msg, args...)           \
     do {                                        \
@@ -1734,6 +1736,26 @@ static void kcp_timer_reset(EV_P_ server_t *server) {
         ev_timer_set(&server->kcp_watcher, (float)(update_ms - current_ms) / 1000.0f, 0);
         TIMER_START(server->kcp_watcher, "");
     }
+}
+
+static void kcp_forward_data(server_t  * server)
+{
+	while(1) {
+		char obuf[2046] = {0};
+		int nrecv = ikcp_recv(server->kcp, obuf, sizeof(obuf));
+		if (nrecv < 0) {
+			if (nrecv == -3) {
+				LOGE("listener[%d]: server[%d]: kcp    <<< error | obuf is small, need to extend it", server->listen_ctx->fd, server->fd_or_conv);
+            }
+			break;
+		}
+
+        LOGE("listener[%d]: server[%d]: kcp    <<< %d", server->listen_ctx->fd, server->fd_or_conv, nrecv);
+		/* if (task->bev) */
+		/* 	evbuffer_add(bufferevent_get_output(task->bev), obuf, nrecv); */
+		/* else */
+		/* 	debug(LOG_INFO, "this task has finished"); */
+	}
 }
 
 /**/
