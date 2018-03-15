@@ -290,7 +290,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     if (revents != EV_TIMER) {
         r = recv(server->fd, buf->data + buf->len, BUF_SIZE - buf->len, 0);
         if (verbose) {
-            LOGI("server[%d]: cli: >>> %d", server->fd, (int)r);
+            LOGI("server[%d]: cli >>> %d", server->fd, (int)r);
         }
         
         if (r == 0) {
@@ -894,7 +894,7 @@ server_send_cb(EV_P_ ev_io *w, int revents)
             server->buf->idx += s;
 
             if (verbose) {
-                LOGI("server[%d]: cli: <<< %d | %d", server->fd, (int)s, (int)server->buf->len);
+                LOGI("server[%d]: cli <<< %d | %d", server->fd, (int)s, (int)server->buf->len);
             }
             
             return;
@@ -906,7 +906,7 @@ server_send_cb(EV_P_ ev_io *w, int revents)
             ev_io_start(EV_A_ & remote->recv_ctx->io);
 
             if (verbose) {
-                LOGI("server[%d]: cli: <<< %d", server->fd, (int)s);
+                LOGI("server[%d]: cli <<< %d", server->fd, (int)s);
             }
             
             LOGI("remote: start watch in server send");
@@ -1058,7 +1058,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         server->buf->idx  = s;
 
         if (verbose) {
-            LOGI("server[%d]: cli: <<< %d | %d", server->fd, s, (int)server->buf->len);
+            LOGI("server[%d]: cli <<< %d | %d", server->fd, s, (int)server->buf->len);
         }
 
         LOGE("xxxxx: stop watch for first send part, left=%d", (int)server->buf->len);
@@ -1069,7 +1069,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         server->buf->len = 0;
 
         if (verbose) {
-            LOGI("server[%d]: cli: <<< %d", server->fd, s);
+            LOGI("server[%d]: cli <<< %d", server->fd, s);
         }
     }
 
@@ -1520,7 +1520,7 @@ static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents) {
 
     millisec = (IUINT32)(ptv.tv_usec / 1000) + (IUINT32)ptv.tv_sec * 1000;
     ikcp_update(remote->kcp, millisec);
-    LOGI("XXXX: update, len=%d", (int)server->buf->len);
+    //LOGI("XXXX: update, len=%d", (int)server->buf->len);
 
     if (server->buf->len == 0 && !ev_is_active(& remote->recv_ctx->io)) {
         ev_io_start(EV_A_ & remote->recv_ctx->io);
