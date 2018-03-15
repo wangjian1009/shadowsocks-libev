@@ -161,20 +161,20 @@ static void kcp_timer_reset(EV_P_ remote_t *remote);
         ev_io_stop(EV_A_ & __h);                \
     } while(0)
 
-#define TIMER_START(__h, __msg, args...)        \
-    do {                                        \
-        if (verbose && !ev_is_active(&__h)) {   \
-            LOGI(__msg, ##args );               \
-        }                                       \
-        ev_timer_start(EV_A_ & __h);            \
+#define TIMER_START(__h, __msg, args...)                    \
+    do {                                                    \
+        if (verbose && (__msg)[0] && !ev_is_active(&__h)) { \
+            LOGI(__msg, ##args );                           \
+        }                                                   \
+        ev_timer_start(EV_A_ & __h);                        \
     } while(0)
 
-#define TIMER_STOP(__h, __msg, args...)         \
-    do {                                        \
-        if (verbose && ev_is_active(&__h)) {    \
-            LOGI(__msg, ##args );               \
-        }                                       \
-        ev_timer_stop(EV_A_ & __h);             \
+#define TIMER_STOP(__h, __msg, args...)                     \
+    do {                                                    \
+        if (verbose && (__msg)[0] && ev_is_active(&__h)) {  \
+            LOGI(__msg, ##args );                           \
+        }                                                   \
+        ev_timer_stop(EV_A_ & __h);                         \
     } while(0)
 
 /**/
@@ -1578,16 +1578,18 @@ static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents) {
 static void kcp_timer_reset(EV_P_ remote_t *remote) {
     server_t * server = remote->server;
     
-    struct timeval ptv;
-	gettimeofday(&ptv, NULL);
-
-    IUINT32 current_ms  = (IUINT32)(ptv.tv_usec / 1000) + (IUINT32)ptv.tv_sec * 1000;
-    IUINT32 update_ms = ikcp_check(remote->kcp, current_ms);
-
     TIMER_STOP(remote->kcp_watcher, "server[%d]: kcp [- update]", server->fd);
 
-    ev_timer_set(&remote->kcp_watcher, (float)(update_ms - current_ms) / 1000.0f, 0);
-    TIMER_START(remote->kcp_watcher, "server[%d]: kcp [+ update]", server->fd);
+    if (1) {
+        struct timeval ptv;
+        gettimeofday(&ptv, NULL);
+
+        IUINT32 current_ms  = (IUINT32)(ptv.tv_usec / 1000) + (IUINT32)ptv.tv_sec * 1000;
+        IUINT32 update_ms = ikcp_check(remote->kcp, current_ms);
+
+        ev_timer_set(&remote->kcp_watcher, (float)(update_ms - current_ms) / 1000.0f, 0);
+        TIMER_START(remote->kcp_watcher, "");
+    }
 }
 
 /**/
