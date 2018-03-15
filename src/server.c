@@ -826,7 +826,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 remote->buf->idx = 0;
                 ev_io_stop(EV_A_ & server_recv_ctx->io);
                 IO_START(
-                    remote->send_ctx->io, "listener[%d]: server[%d]: tcp [+ >>>] | send would block",
+                    remote->send_ctx->io,
+                    "listener[%d]: server[%d]: tcp [+ >>>] | send would block",
                     server->listen_ctx->fd, server->fd_or_conv);
             } else {
                 ERROR("server_recv_send");
@@ -837,8 +838,10 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             remote->buf->len -= s;
             remote->buf->idx  = s;
             ev_io_stop(EV_A_ & server_recv_ctx->io);
-            IO_START(remote->send_ctx->io, "listener[%d]: server[%d]: tcp [+ >>>] | send in process",
-                     server->listen_ctx->fd, server->fd_or_conv);
+            IO_START(
+                remote->send_ctx->io,
+                "listener[%d]: server[%d]: tcp [+ >>>] | send in process",
+                server->listen_ctx->fd, server->fd_or_conv);
         }
         return;
     } else if (server->stage == STAGE_INIT) {
@@ -1011,8 +1014,10 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
                 // waiting on remote connected event
                 ev_io_stop(EV_A_ & server_recv_ctx->io);
-                IO_START(remote->send_ctx->io, "listener[%d]: server[%d]: remote [+ >>>] | connect begin",
-                         server->listen_ctx->fd, server->fd_or_conv);
+                IO_START(
+                    remote->send_ctx->io,
+                    "listener[%d]: server[%d]: remote [+ >>>] | connect begin",
+                    server->listen_ctx->fd, server->fd_or_conv);
             }
         } else {
             ev_io_stop(EV_A_ & server_recv_ctx->io);
@@ -1079,8 +1084,10 @@ server_send_cb(EV_P_ ev_io *w, int revents)
             server->buf->idx = 0;
             ev_io_stop(EV_A_ & server_send_ctx->io);
             if (remote != NULL) {
-                IO_START(remote->recv_ctx->io, "listener[%d]: server[%d]: remote [+ <<<] | tcp cend complete",
-                         server->listen_ctx->fd, server->fd_or_conv);
+                IO_START(
+                    remote->recv_ctx->io,
+                    "listener[%d]: server[%d]: remote [+ <<<] | tcp cend complete",
+                    server->listen_ctx->fd, server->fd_or_conv);
                 return;
             } else {
                 LOGE("invalid remote");
@@ -1179,7 +1186,10 @@ resolv_cb(struct sockaddr *addr, void *data)
             }
 
             // listen to remote connected event
-            ev_io_start(EV_A_ & remote->send_ctx->io);
+            IO_START(
+                remote->send_ctx->io,
+                "listener[%d]: server[%d]: remote [+ >>>] | connect begin",
+                server->listen_ctx->fd, server->fd_or_conv);
         }
     }
 }
@@ -1262,8 +1272,10 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
                 // no data, wait for send
                 server->buf->idx = 0;
                 ev_io_stop(EV_A_ & remote_recv_ctx->io);
-                IO_START(server->send_ctx->io, "listener[%d]: server[%d]: tcp [+ <<<] | tcp send would block",
-                         server->listen_ctx->fd, server->fd_or_conv);
+                IO_START(
+                    server->send_ctx->io,
+                    "listener[%d]: server[%d]: tcp [+ <<<] | tcp send would block",
+                    server->listen_ctx->fd, server->fd_or_conv);
             } else {
                 ERROR("remote_recv_send");
                 close_and_free_remote(EV_A_ remote);
@@ -1274,8 +1286,10 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
             server->buf->len -= s;
             server->buf->idx  = s;
             ev_io_stop(EV_A_ & remote_recv_ctx->io);
-            IO_START(server->send_ctx->io, "listener[%d]: server[%d]: tcp [+ <<<] | tcp send in process",
-                     server->listen_ctx->fd, server->fd_or_conv);
+            IO_START(
+                server->send_ctx->io,
+                "listener[%d]: server[%d]: tcp [+ <<<] | tcp send in process",
+                server->listen_ctx->fd, server->fd_or_conv);
         }
     }
 
@@ -1350,8 +1364,14 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
             if (remote->buf->len == 0) {
                 server->stage = STAGE_STREAM;
                 ev_io_stop(EV_A_ & remote_send_ctx->io);
-                ev_io_start(EV_A_ & server->recv_ctx->io);
-                ev_io_start(EV_A_ & remote->recv_ctx->io);
+                IO_START(
+                    server->recv_ctx->io,
+                    "listener[%d]: server[%d]: tcp [+ >>>] | remote getpeername success",
+                    server->listen_ctx->fd, server->fd_or_conv);
+                IO_START(
+                    remote->recv_ctx->io,
+                    "listener[%d]: server[%d]: remote [+ <<<] | remote getpeername success",
+                    server->listen_ctx->fd, server->fd_or_conv);
                 return;
             }
         } else {
@@ -1394,10 +1414,16 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
             remote->buf->idx = 0;
             ev_io_stop(EV_A_ & remote_send_ctx->io);
             if (server != NULL) {
-                ev_io_start(EV_A_ & server->recv_ctx->io);
+                IO_START(
+                    server->recv_ctx->io,
+                    "listener[%d]: server[%d]: %s [+ >>>] | remote send complete",
+                    server->listen_ctx->fd, server->fd_or_conv, server->kcp ? "udp" : "tcp");
                 if (server->stage != STAGE_STREAM) {
                     server->stage = STAGE_STREAM;
-                    ev_io_start(EV_A_ & remote->recv_ctx->io);
+                    IO_START(
+                        remote->recv_ctx->io,
+                        "listener[%d]: server[%d]: remote [+ <<<] | remote send complete",
+                        server->listen_ctx->fd, server->fd_or_conv);
                 }
             } else {
                 LOGE("invalid server");
@@ -1692,7 +1718,10 @@ accept_cb(EV_P_ ev_io *w, int revents)
         }
 
         server_t *server = new_server(fd, listener);
-        ev_io_start(EV_A_ & server->recv_ctx->io);
+        IO_START(
+            server->recv_ctx->io,
+            "listener[%d]: server[%d]: tcp [+ >>>] | accept success",
+            server->listen_ctx->fd, server->fd_or_conv);
         ev_timer_start(EV_A_ & server->recv_ctx->watcher);
     }
 }
@@ -1730,10 +1759,6 @@ static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents) {
     ikcp_update(server->kcp, millisec);
     //LOGI("XXXX: update, len=%d", (int)server->buf->len);
 
-    if (server->buf->len == 0) {
-        IO_START(server->recv_ctx->io, "server[%d]: udp [+ <<<] | update found cli send complete", server->fd_or_conv);
-    }        
-    
     kcp_timer_reset(EV_A_ server);
 }
 
@@ -2207,7 +2232,7 @@ main(int argc, char **argv)
             listen_ctx->use_kcp = use_kcp;
 
             ev_io_init(&listen_ctx->io, accept_cb, listenfd, EV_READ);
-            ev_io_start(loop, &listen_ctx->io);
+            IO_START(listen_ctx->io, "listener[%d]: +", listen_ctx->fd);
 
             if (plugin != NULL)
                 break;
