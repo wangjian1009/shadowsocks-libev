@@ -1939,7 +1939,6 @@ accept_cb(EV_P_ ev_io *w, int revents)
 
 /*Loki: kcp */
 static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user) {
-    LOGI("xxxx: kcp_output");
     server_t * server = user;
 	int nret = sendto(server->listen_ctx->fd, buf, len, 0, (struct sockaddr *)&server->addr, server->addr_len);
 	if (nret > 0) {
