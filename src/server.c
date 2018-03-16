@@ -947,17 +947,19 @@ server_process_data(EV_P_ server_t * server, buffer_t *buf)
         }
 
         if (verbose) {
-            if ((atyp & ADDRTYPE_MASK) == 4)
-                LOGI("connect to [%s]:%d", host, ntohs(port));
-            else
-                LOGI("connect to %s:%d", host, ntohs(port));
+            if ((atyp & ADDRTYPE_MASK) == 4) {
+                LOGI("listener[%d]: %s: connect to [%s]:%d", server->listen_ctx->fd, server->peer_name, host, ntohs(port));
+            }
+            else {
+                LOGI("listener[%d]: %s: connect to %s:%d", server->listen_ctx->fd, server->peer_name, host, ntohs(port));
+            }
         }
 
         if (!need_query) {
             remote_t *remote = connect_to_remote(EV_A_ & info, server);
 
             if (remote == NULL) {
-                LOGE("connect error");
+                LOGE("listener[%d]: %s: connect error", server->listen_ctx->fd, server->peer_name);
                 return -1;
             } else {
                 server->remote = remote;
@@ -1171,11 +1173,11 @@ resolv_cb(struct sockaddr *addr, void *data)
     struct ev_loop *loop = server->listen_ctx->loop;
 
     if (addr == NULL) {
-        LOGE("unable to resolve %s", query->hostname);
+        LOGE("listener[%d]: %s: unable to resolve %s", server->listen_ctx->fd, server->peer_name, query->hostname);
         close_and_free_server(EV_A_ server);
     } else {
         if (verbose) {
-            LOGI("successfully resolved %s", query->hostname);
+            LOGI("listener[%d]: %s: successfully resolved %s", server->listen_ctx->fd, server->peer_name, query->hostname);
         }
 
         struct addrinfo info;
@@ -1239,7 +1241,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     if (r == 0) {
         // connection closed
         if (verbose) {
-            LOGI("remote_recv close the connection");
+            LOGI("listener[%d]: %s: close the connection(remote receive)", server->listen_ctx->fd, server->peer_name);
         }
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
@@ -1385,7 +1387,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
         int r = getpeername(remote->fd, (struct sockaddr *)&addr, &len);
         if (r == 0) {
             if (verbose) {
-                LOGI("remote connected");
+                LOGI("listener[%d]: %s: remote connected", server->listen_ctx->fd, server->peer_name);
             }
             remote->send_ctx->connected = 1;
 
@@ -1424,7 +1426,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
     if (remote->buf->len == 0) {
         // close and free
         if (verbose) {
-            LOGI("remote_send close the connection");
+            LOGI("listener[%d]: %s: close the connection(remote send)", server->listen_ctx->fd, server->peer_name);
         }
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
@@ -1472,7 +1474,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
                         server->listen_ctx->fd, server->peer_name);
                 }
             } else {
-                LOGE("invalid server");
+                LOGE("listener[%d]: %s: invalid server", server->listen_ctx->fd, server->peer_name);
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
             }
@@ -1545,7 +1547,7 @@ close_and_free_remote(EV_P_ remote_t *remote)
         free_remote(remote);
         if (verbose) {
             remote_conn--;
-            LOGI("current remote connection: %d", remote_conn);
+            LOGI("listener[%d]: %s: remote free, current remote connection: %d", server->listen_ctx->fd, server->peer_name, remote_conn);
         }
     }
 }
@@ -1809,7 +1811,7 @@ accept_cb(EV_P_ ev_io *w, int revents)
         setnonblocking(fd);
 
         if (verbose) {
-            LOGI("accept a connection");
+            LOGI("listener[%d]: accept a connection", listener->fd);
         }
 
         server_t *server = new_server(fd, listener, peer_name, &addr, len);
