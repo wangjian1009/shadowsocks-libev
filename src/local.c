@@ -61,7 +61,6 @@
 #include "plugin.h"
 #include "local.h"
 #include "winsock.h"
-#include "xkcp_config.h"
 
 #ifndef LIB_ONLY
 #ifdef __APPLE__
@@ -1225,7 +1224,6 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
 static remote_t *
 new_remote(int fd, int timeout, uint8_t use_kcp)
 {
-	struct xkcp_param *param = xkcp_get_param();
     remote_t *remote;
     remote = ss_malloc(sizeof(remote_t));
 
@@ -1250,8 +1248,8 @@ new_remote(int fd, int timeout, uint8_t use_kcp)
         conv++;
     
         remote->kcp->output	= kcp_output;
-        ikcp_wndsize(remote->kcp, param->sndwnd, param->rcvwnd);
-        ikcp_nodelay(remote->kcp, param->nodelay, param->interval, param->resend, param->nc);
+        /* ikcp_wndsize(remote->kcp, param->sndwnd, param->rcvwnd); */
+        /* ikcp_nodelay(remote->kcp, param->nodelay, param->interval, param->resend, param->nc); */
 
         remote->kcp_watcher.data = remote;
         ev_timer_init(&remote->kcp_watcher, kcp_update_cb, 0.001, 0.001);
@@ -1608,6 +1606,13 @@ main(int argc, char **argv)
     int mtu          = 0;
     int mptcp        = 0;
     uint8_t use_kcp  = 0;
+	/* int kcp_sndwnd;			// sndwnd */
+	/* int kcp_rcvwnd;			// rcvwnd */
+	/* int kcp_nodelay;		// nodelay */
+	/* int kcp_interval;		// interval */
+	/* int kcp_resend;			// resend */
+	/* int kcp_nc; 			// no congestion */
+    
     char *user       = NULL;
     char *local_port = NULL;
     char *local_addr = NULL;
@@ -1632,7 +1637,6 @@ main(int argc, char **argv)
     int remote_num = 0;
     ss_addr_t remote_addr[MAX_REMOTE_NUM];
     char *remote_port = NULL;
-    struct xkcp_config *config;
 
     static struct option long_options[] = {
         { "reuse-port",  no_argument,       NULL, GETOPT_VAL_REUSE_PORT  },
@@ -1776,10 +1780,6 @@ main(int argc, char **argv)
         usage();
         exit(EXIT_FAILURE);
     }
-
-    config = xkcp_get_config();
-
-	config_init();
 
 	//parse_commandline(argc, argv);
 

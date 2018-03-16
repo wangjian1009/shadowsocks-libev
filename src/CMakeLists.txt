@@ -5,18 +5,7 @@ else ()
     option(WITH_SS_REDIR "Build ss-redir" OFF)
 endif ()
 
-set(XKCP_SHARED_SOURCES
-        xkcp_config.c
-        )
 
-set(XKCP_CLIENT_SOURCE
-        ${XKCP_SHARED_SOURCES}
-        )
-
-set(XKCP_SERVER_SOURCE
-        ${XKCP_SHARED_SOURCES}
-        )
-      
 set(SS_SNI_SOURCE
         http.c
         tls.c
@@ -55,11 +44,11 @@ set(LIBSHADOWSOCKS_LIBEV_SOURCE
         ${SS_PLUGIN_SOURCE}
         ${SS_SNI_SOURCE}
         ${SS_ACL_SOURCE}
-        ${XKCP_CLIENT_SOURCE}
         )
 
 set(SS_LOCAL_SOURCE
         ${LIBSHADOWSOCKS_LIBEV_SOURCE}
+
         )
 
 set(SS_TUNNEL_SOURCE
@@ -81,7 +70,6 @@ set(SS_SERVER_SOURCE
         ${SS_PLUGIN_SOURCE}
         ${SS_SNI_SOURCE}
         ${SS_ACL_SOURCE}
-        ${XKCP_SERVER_SOURCE}
         )
 
 set(SS_MANAGER_SOURCE

@@ -284,17 +284,29 @@ free_connections(struct ev_loop *loop)
 }
 
 static char *
-get_name_from_addr(struct sockaddr_storage * addr, socklen_t addr_len) {
-    static char name[INET6_ADDRSTRLEN] = { 0 };
+get_name_from_addr(struct sockaddr_storage * addr, socklen_t addr_len, uint8_t with_port) {
+    static char name[INET6_ADDRSTRLEN+32] = { 0 };
     memset(name, 0, sizeof(name));
-
+    int port;
+    
     if (addr->ss_family == AF_INET) {
         struct sockaddr_in *s = (struct sockaddr_in *)addr;
         inet_ntop(AF_INET, &s->sin_addr, name, INET_ADDRSTRLEN);
+        port = ntohs(s->sin_port);
     } else if (addr->ss_family == AF_INET6) {
         struct sockaddr_in6 *s = (struct sockaddr_in6 *)addr;
         inet_ntop(AF_INET6, &s->sin6_addr, name, INET6_ADDRSTRLEN);
+        port = ntohs(s->sin6_port);
     }
+    else {
+        return "unknown-family";
+    }
+
+    if (with_port) {
+        int len = strlen(name);
+        snprintf(name + len, sizeof(name) - len, ":%d", port);
+    }
+    
     return name;
 }
 
@@ -306,7 +318,7 @@ get_peer_name(int fd)
     memset(&addr, 0, len);
     int err = getpeername(fd, (struct sockaddr *)&addr, &len);
     if (err == 0) {
-        return get_name_from_addr(&addr, len);
+        return get_name_from_addr(&addr, len, 0);
     } else {
         return NULL;
     }
@@ -522,8 +534,9 @@ connect_to_remote(EV_P_ struct addrinfo *res,
         }
 
         if (outbound_block_match_host(ipstr) == 1) {
-            if (verbose)
-                LOGI("outbound blocked %s", ipstr);
+            if (verbose) {
+                LOGI("listener[%d]: %s: outbound blocked %s", server->listen_ctx->fd, server->peer_name, ipstr);
+            }
             return NULL;
         }
     }
@@ -870,8 +883,9 @@ server_process_data(EV_P_ server_t * server, buffer_t *buf)
                 return -1;
             }
             if (acl && outbound_block_match_host(host) == 1) {
-                if (verbose)
-                    LOGI("outbound blocked %s", host);
+                if (verbose) {
+                    LOGI("listener[%d]: %s: outbound blocked %s", server->listen_ctx->fd, server->peer_name, host);
+                }
                 return -1;
             }
             struct cork_ip ip;
@@ -1028,6 +1042,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     }
 
     assert(!server->kcp);
+    assert(buf->len == 0);
     ssize_t r = recv(server->fd_or_conv, buf->data, BUF_SIZE, 0);
 
     if (r == 0) {
@@ -1169,7 +1184,7 @@ server_timeout_cb(EV_P_ ev_timer *watcher, int revents)
     remote_t *remote = server->remote;
 
     if (verbose) {
-        LOGI("TCP connection timeout");
+        LOGI("listener[%d]: %s: TCP connection timeout", server->listen_ctx->fd, server->peer_name);
     }
 
     close_and_free_remote(EV_A_ remote);
@@ -1263,6 +1278,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
 
     ev_timer_again(EV_A_ & server->recv_ctx->watcher);
 
+    assert(server->buf->len == 0);
     ssize_t r = recv(remote->fd, server->buf->data, BUF_SIZE, 0);
 
     if (r == 0) {
@@ -1298,7 +1314,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     int err = crypto->encrypt(server->buf, server->e_ctx, BUF_SIZE);
 
     if (err) {
-        LOGE("invalid password or cipher");
+        LOGE("listener[%d]: %s: invalid password or cipher", server->listen_ctx->fd, server->peer_name);
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
         return;
@@ -1319,6 +1335,9 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
             return;
         }
 
+        LOGI("xxxx: kcp send %d", (int)server->buf->len);
+        ikcp_flush(server->kcp);
+        
         kcp_timer_reset(EV_A_ server);
     }
     else {
@@ -1808,7 +1827,7 @@ accept_cb(EV_P_ ev_io *w, int revents)
         server_t * server = kcp_find_server(conv, &clientaddr);
         if (server == NULL) {
             char peer_name[INET6_ADDRSTRLEN + 20];
-            snprintf(peer_name, sizeof(peer_name), "%s{%d}", get_name_from_addr(&clientaddr, clientlen), conv);
+            snprintf(peer_name, sizeof(peer_name), "%s{%d}", get_name_from_addr(&clientaddr, clientlen, 1), conv);
             
             server = new_server(conv, listener, peer_name, &clientaddr, clientlen);
 
@@ -1852,7 +1871,7 @@ accept_cb(EV_P_ ev_io *w, int revents)
             return;
         }
         
-        char *peer_name = get_name_from_addr(&addr, len);
+        char *peer_name = get_name_from_addr(&addr, len, 0);
         if (peer_name != NULL) {
             int in_white_list = 0;
             if (acl) {
@@ -1887,7 +1906,7 @@ accept_cb(EV_P_ ev_io *w, int revents)
             LOGI("listener[%d]: accept a connection", listener->fd);
         }
 
-        server_t *server = new_server(fd, listener, peer_name, &addr, len);
+        server_t *server = new_server(fd, listener, get_name_from_addr(&addr, len, 1), &addr, len);
         IO_START(
             server->recv_ctx->io,
             "listener[%d]: %s: tcp [+ >>>] | accept success",
@@ -1902,6 +1921,7 @@ accept_cb(EV_P_ ev_io *w, int revents)
 
 /*Loki: kcp */
 static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user) {
+    LOGI("xxxx: kcp_output");
     server_t * server = user;
 	int nret = sendto(server->listen_ctx->fd, buf, len, 0, (struct sockaddr *)&server->addr, server->addr_len);
 	if (nret != 0) {
@@ -1915,7 +1935,9 @@ static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user) {
         }
     }
 	else {
-        LOGE("listener[%d]: %s: udp <<< %d data error: %s", server->listen_ctx->fd, server->peer_name, len, strerror(errno));
+        if (verbose) {
+            LOGE("listener[%d]: %s: udp <<< %d data error: %s", server->listen_ctx->fd, server->peer_name, len, strerror(errno));
+        }
     }
 
 	return nret;
@@ -1930,13 +1952,13 @@ static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents) {
 
     millisec = (IUINT32)(ptv.tv_usec / 1000) + (IUINT32)ptv.tv_sec * 1000;
     ikcp_update(server->kcp, millisec);
-    LOGI("XXXX: update, len=%d", (int)server->buf->len);
+    //LOGI("XXXX: update, len=%d", (int)server->buf->len);
 
     kcp_timer_reset(EV_A_ server);
 }
 
 static void kcp_timer_reset(EV_P_ server_t *server) {
-    TIMER_STOP(server->kcp_watcher, "listener[%d]: %s: kcp [- update]", server->listen_ctx->fd, server->peer_name);
+    TIMER_STOP(server->kcp_watcher, ""); //"listener[%d]: %s: kcp [- update]", server->listen_ctx->fd, server->peer_name);
 
     struct timeval ptv;
     gettimeofday(&ptv, NULL);
@@ -1945,15 +1967,17 @@ static void kcp_timer_reset(EV_P_ server_t *server) {
     IUINT32 update_ms = ikcp_check(server->kcp, current_ms);
 
     ev_timer_set(&server->kcp_watcher, (float)(update_ms - current_ms) / 1000.0f, 0);
-    TIMER_START(server->kcp_watcher, "listener[%d]: %s: kcp [+ update]", server->listen_ctx->fd, server->peer_name);
+    TIMER_START(server->kcp_watcher, ""); //"listener[%d]: %s: kcp [+ update]", server->listen_ctx->fd, server->peer_name);
 }
 
 static int kcp_forward_data(EV_P_ server_t  * server)
 {
     assert(server->kcp);
 
+    LOGI("XXXX forward");
+
     if (server->buf->len != 0) {
-        LOGE("listener[%d]: %s: forward skip for buf with data", server->listen_ctx->fd, server->peer_name);
+        LOGI("listener[%d]: %s: forward skip for buf with data", server->listen_ctx->fd, server->peer_name);
         return 0;
     }
     
@@ -1964,6 +1988,7 @@ static int kcp_forward_data(EV_P_ server_t  * server)
         ev_timer_again(EV_A_ & server->recv_ctx->watcher);
     }
 
+    assert(buf->len == 0);
     int nrecv = ikcp_recv(server->kcp, buf->data, BUF_SIZE);
     if (nrecv < 0) {
         if (nrecv == -3) {

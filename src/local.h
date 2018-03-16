@@ -49,7 +49,17 @@ typedef struct listen_ctx {
     int timeout;
     int fd;
     int mptcp;
+
+    /*kcp*/
     uint8_t use_kcp;
+	int kcp_sndwnd;			// sndwnd
+	int kcp_rcvwnd;			// rcvwnd
+	int kcp_nodelay;		// nodelay
+	int kcp_interval;		// interval
+	int kcp_resend;			// resend
+	int kcp_nc; 			// no congestion
+    /**/
+    
     struct sockaddr **remote_addr;
 } listen_ctx_t;
 
