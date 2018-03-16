@@ -119,7 +119,7 @@ static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user);
 static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents);
 static void kcp_timer_reset(EV_P_ server_t *server);
 static void kcp_forward_data(server_t  * server);
-static server_t * kcp_find_server(int conv);
+static server_t * kcp_find_server(int conv, struct sockaddr_storage * addr);
 /**/
 
 #define IO_START(__h, __msg, args...)           \
@@ -1734,7 +1734,7 @@ accept_cb(EV_P_ ev_io *w, int revents)
         
         int conv = ikcp_getconv(buf);
 
-        server_t * server = kcp_find_server(conv);
+        server_t * server = kcp_find_server(conv, &clientaddr);
         if (server == NULL) {
             char peer_name[INET6_ADDRSTRLEN + 20];
             snprintf(peer_name, sizeof(peer_name), "%s{%d}", get_name_from_addr(&clientaddr, clientlen), conv);
@@ -1893,11 +1893,33 @@ static void kcp_forward_data(server_t  * server)
 	}
 }
 
-static server_t * kcp_find_server(int conv) {
+static server_t * kcp_find_server(int conv, struct sockaddr_storage * addr) {
     struct cork_dllist_item *curr, *next;
     cork_dllist_foreach_void(&connections, curr, next) {
         server_t * server = cork_container_of(curr, server_t, entries);
-        if (server->kcp && server->fd_or_conv == conv) return server;
+
+        if (!server->kcp) continue;
+        if (server->fd_or_conv != conv) continue;
+        if (addr->ss_family != server->addr.ss_family) continue;
+        
+        if (addr->ss_family == AF_INET) {
+            struct sockaddr_in * i = (struct sockaddr_in *)addr;
+            struct sockaddr_in * c = (struct sockaddr_in *)&server->addr;
+
+            if (i->sin_port != c->sin_port) continue;
+            if (i->sin_addr.s_addr != c->sin_addr.s_addr) continue;
+        } else if (addr->ss_family == AF_INET6) {
+            struct sockaddr_in6 *i = (struct sockaddr_in6 *)addr;
+            struct sockaddr_in6 *c = (struct sockaddr_in6 *)&server->addr;
+
+            if (i->sin6_port != c->sin6_port) continue;
+            assert(0);
+        }
+        else {
+            continue;
+        }
+        
+        return server;
     }
 
     return NULL;
