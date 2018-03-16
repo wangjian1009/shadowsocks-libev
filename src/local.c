@@ -1571,6 +1571,11 @@ static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents) {
     if (server->buf->len == 0) {
         IO_START(remote->recv_ctx->io, "server[%d]: udp [+ <<<] | update found cli send complete", server->fd);
     }        
+
+    /*Loki: check is disconnected*/
+    /* if (!ev_is_active(&server->send_ctx->io) && !ev_is_active(&server->recv_ctx->io)) { */
+        
+    /* } */
     
     kcp_timer_reset(EV_A_ remote);
 }

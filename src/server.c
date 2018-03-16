@@ -1318,6 +1318,8 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
             close_and_free_server(EV_A_ server);
             return;
         }
+
+        kcp_timer_reset(EV_A_ server);
     }
     else {
         int s = send(server->fd_or_conv, server->buf->data, server->buf->len, 0);
@@ -1731,7 +1733,7 @@ close_and_free_server(EV_P_ server_t *server)
 
         /*Loki: kcp*/
         TIMER_STOP(
-            remote->kcp_watcher,
+            server->kcp_watcher,
             "listener[%d]: %s: kcp [- update]",
             server->listen_ctx->fd, server->peer_name);
         /*kcp*/
@@ -1826,7 +1828,7 @@ accept_cb(EV_P_ ev_io *w, int revents)
 			LOGI("listener[%d]: %s: udp >>> %d", listener->fd, server->peer_name, len);
         }
 
-        kcp_timer_reset(server);
+        kcp_timer_reset(EV_A_ server);
         
         if (kcp_forward_data(EV_A_ server) != 0) {
             close_and_free_remote(EV_A_ server->remote);
