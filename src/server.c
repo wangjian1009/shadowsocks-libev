@@ -383,7 +383,7 @@ setnonblocking(int fd)
 #endif
 
 int
-create_and_bind(int socktype, const char *host, const char *port, int mptcp)
+create_and_bind(const char *host, const char *port, int mptcp)
 {
     struct addrinfo hints;
     struct addrinfo *result, *rp, *ipv4v6bindall;
@@ -391,7 +391,7 @@ create_and_bind(int socktype, const char *host, const char *port, int mptcp)
 
     memset(&hints, 0, sizeof(struct addrinfo));
     hints.ai_family   = AF_UNSPEC;               /* Return IPv4 and IPv6 choices */
-    hints.ai_socktype = socktype;             /* We want a TCP socket */
+    hints.ai_socktype = SOCK_STREAM;             /* We want a TCP socket */
     hints.ai_flags    = AI_PASSIVE | AI_ADDRCONFIG; /* For wildcard IP address */
     hints.ai_protocol = IPPROTO_TCP;
 
@@ -461,7 +461,7 @@ create_and_bind(int socktype, const char *host, const char *port, int mptcp)
             }
         }
 
-        if (mptcp == 1 && socktype == SOCK_STREAM) {
+        if (mptcp == 1) {
             int i = 0;
             while ((mptcp = mptcp_enabled_values[i]) > 0) {
                 int err = setsockopt(listen_sock, IPPROTO_TCP, mptcp, &opt, sizeof(opt));
@@ -1922,7 +1922,7 @@ main(int argc, char **argv)
         { "plugin-opts",     required_argument, NULL, GETOPT_VAL_PLUGIN_OPTS },
         { "password",        required_argument, NULL, GETOPT_VAL_PASSWORD    },
         { "key",             required_argument, NULL, GETOPT_VAL_KEY         },
-        { "kcp",             required_argument, NULL, GETOPT_VAL_KCP         },
+        { "kcp",             no_argument      , NULL, GETOPT_VAL_KCP         },
 #ifdef __linux__
         { "mptcp",           no_argument,       NULL, GETOPT_VAL_MPTCP       },
 #endif
@@ -2277,14 +2277,26 @@ main(int argc, char **argv)
             int listenfd;
 
             if (use_kcp) {
-                listenfd = create_and_bind(SOCK_DGRAM, host, server_port, mptcp);
+                struct sockaddr_in sin;
+                memset(&sin, 0, sizeof(sin));
+                sin.sin_family = AF_INET;
+                sin.sin_addr.s_addr = inet_addr(host);
+                sin.sin_port = htons(atoi(server_port));
+	
+                listenfd = socket(AF_INET, SOCK_DGRAM, 0);
                 if (listenfd == -1) {
                     FATAL("create() error");
                 }
+	
+                if (bind(listenfd, (struct sockaddr *) &sin, sizeof(sin)) != 0) {
+                    LOGE("listener[%d]: bind to %s:%s fail, %s", listenfd, host, server_port, strerror(errno));
+                    FATAL("bind() error");
+                }
+	
                 setfastopen(listenfd);
             }
             else {
-                listenfd = create_and_bind(SOCK_STREAM, host, server_port, mptcp);
+                listenfd = create_and_bind(host, server_port, mptcp);
                 if (listenfd == -1) {
                     FATAL("bind() error");
                 }
