@@ -1240,6 +1240,7 @@ resolv_cb(struct sockaddr *addr, void *data)
         remote_t *remote = connect_to_remote(EV_A_ & info, server);
 
         if (remote == NULL) {
+            LOGE("listener[%d]: %s: connect error", server->listen_ctx->fd, server->peer_name);
             close_and_free_server(EV_A_ server);
         } else {
             server->remote = remote;
@@ -1287,6 +1288,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         if (verbose) {
             LOGI("listener[%d]: %s: close the connection(remote receive)", server->listen_ctx->fd, server->peer_name);
         }
+        if (server->kcp) ikcp_flush(server->kcp);
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
         return;
@@ -1396,6 +1398,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
             server->buf->len = 0;
 
             if (server->kcp && kcp_forward_data(EV_A_ server) != 0) {
+                LOGE("listener[%d]: %s: xxxxxx forward error", server->listen_ctx->fd, server->peer_name);
                 close_and_free_remote(EV_A_ server->remote);
                 close_and_free_server(EV_A_ server);
             }
@@ -1502,6 +1505,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
         if (verbose) {
             LOGI("listener[%d]: %s: close the connection(remote send)", server->listen_ctx->fd, server->peer_name);
         }
+        if (server->kcp) ikcp_flush(server->kcp);
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
         return;
@@ -1855,6 +1859,7 @@ accept_cb(EV_P_ ev_io *w, int revents)
         kcp_timer_reset(EV_A_ server);
         
         if (kcp_forward_data(EV_A_ server) != 0) {
+            LOGE("listener[%d]: %s: forward error", server->listen_ctx->fd, server->peer_name);
             close_and_free_remote(EV_A_ server->remote);
             close_and_free_server(EV_A_ server);
         }
@@ -1974,8 +1979,9 @@ static void kcp_timer_reset(EV_P_ server_t *server) {
     IUINT32 current_ms  = (IUINT32)(ptv.tv_usec / 1000) + (IUINT32)ptv.tv_sec * 1000;
     IUINT32 update_ms = ikcp_check(server->kcp, current_ms);
 
-    ev_timer_set(&server->kcp_watcher, (float)(update_ms - current_ms) / 1000.0f, 0);
-    TIMER_START(server->kcp_watcher, "listener[%d]: %s: kcp [+ update]", server->listen_ctx->fd, server->peer_name);
+    float delay = (float)(update_ms - current_ms) / 1000.0f;
+    ev_timer_set(&server->kcp_watcher, delay, 0.0f);
+    TIMER_START(server->kcp_watcher, "listener[%d]: %s: kcp [+ update] delay %.5f", server->listen_ctx->fd, server->peer_name, delay);
 }
 
 static int kcp_forward_data(EV_P_ server_t  * server)
