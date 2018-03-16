@@ -2292,11 +2292,13 @@ main(int argc, char **argv)
             if (plugin != NULL) {
                 host = "127.0.0.1";
             }
-
-            if (host && strcmp(host, ":") > 0)
-                LOGI("tcp server listening at [%s]:%s", host, server_port);
-            else
-                LOGI("tcp server listening at %s:%s", host ? host : "0.0.0.0", server_port);
+                                                    
+            if (host && strcmp(host, ":") > 0)  {
+                LOGI("%s server listening at [%s]:%s", use_kcp ? "kcp" : "tcp", host, server_port);
+            }
+            else {
+                LOGI("%s server listening at %s:%s", use_kcp ? "kcp" : "tcp", host ? host : "0.0.0.0", server_port);
+            }
 
             // Bind to port
             int listenfd;
