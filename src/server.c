@@ -986,7 +986,7 @@ server_process_data(EV_P_ server_t * server, buffer_t *buf)
                 
                 IO_START(
                     remote->send_ctx->io,
-                    "listener[%d]: %s: remote [+ >>>] | connect begin",
+                    "listener[%d]: %s: svr [+ >>>] | connect begin",
                     server->listen_ctx->fd, server->peer_name);
             }
         } else {
@@ -1146,7 +1146,7 @@ server_send_cb(EV_P_ ev_io *w, int revents)
                 "listener[%d]: %s: svr [+ <<<] | tcp cend complete",
                 server->listen_ctx->fd, server->peer_name);
 
-            if (kcp_forward_data(EV_A_ server) != 0) {
+            if (server->kcp && kcp_forward_data(EV_A_ server) != 0) {
                 close_and_free_remote(EV_A_ server->remote);
                 close_and_free_server(EV_A_ server);
             }
@@ -1374,7 +1374,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
 
             server->buf->len = 0;
 
-            if (kcp_forward_data(EV_A_ server) != 0) {
+            if (server->kcp && kcp_forward_data(EV_A_ server) != 0) {
                 close_and_free_remote(EV_A_ server->remote);
                 close_and_free_server(EV_A_ server);
             }
