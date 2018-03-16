@@ -1267,7 +1267,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     setTosFromConnmark(remote, server);
 #endif
     if (server->kcp) {
-        int nret = ikcp_input(server->kcp, server->buf->data, server->buf->len);
+        int nret = ikcp_send(server->kcp, server->buf->data, server->buf->len);
         if (nret < 0) {
             if (verbose) {
                 LOGE("listen[%d]: server[%d]: kcp     <<< error, rv=%d", server->listen_ctx->fd, server->fd_or_conv, nret);
@@ -1280,8 +1280,6 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         if (verbose) {
             LOGI("listen[%d]: server[%d]: kcp     <<< %d", server->listen_ctx->fd, server->fd_or_conv, nret);
         }
-
-        kcp_forward_data(server);
     }
     else {
         int s = send(server->fd_or_conv, server->buf->data, server->buf->len, 0);
@@ -1733,7 +1731,7 @@ accept_cb(EV_P_ ev_io *w, int revents)
                 listener->fd, server->fd_or_conv);
         }
 
-		int nret = ikcp_send(server->kcp, buf, len);
+		int nret = ikcp_input(server->kcp, buf, len);
 		if (nret < 0) {
 			LOGE("listener[%d]: server[%d]: kcp     >>> error(%d)", listener->fd, server->fd_or_conv, nret);
             return;
@@ -1742,6 +1740,8 @@ accept_cb(EV_P_ ev_io *w, int revents)
         if (verbose) {
 			LOGI("listener[%d]: server[%d]: kcp     >>> %d", listener->fd, server->fd_or_conv, nret);
         }
+
+        kcp_forward_data(server);
     }
     else {
         int fd = accept(listener->fd, NULL, NULL);
@@ -1801,23 +1801,22 @@ accept_cb(EV_P_ ev_io *w, int revents)
 /*Loki: kcp */
 static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user) {
     server_t * server = user;
-	/* int nret = sendto(server->fd, buf, len, 0, (struct sockaddr *)&server->addr, server->addr_len); */
-	/* if (nret != 0) { */
-    /*     if (verbose) { */
-    /*         if (nret != len) { */
-    /*             LOGI("server[%d]: udp         >>> %d | %d", server->fd, nret, (len - nret)); */
-    /*         } */
-    /*         else { */
-    /*             LOGI("server[%d]: udp         >>> %d", server->fd, nret); */
-    /*         } */
-    /*     } */
-    /* } */
-	/* else { */
-    /*     LOGE("server[%d]: udp         >>> %d data error: %s", server->fd, len, strerror(errno)); */
-    /* } */
+	int nret = sendto(server->fd, buf, len, 0, (struct sockaddr *)&server->addr, server->addr_len);
+	if (nret != 0) {
+        if (verbose) {
+            if (nret != len) {
+                LOGI("server[%d]: udp         >>> %d | %d", server->fd, nret, (len - nret));
+            }
+            else {
+                LOGI("server[%d]: udp         >>> %d", server->fd, nret);
+            }
+        }
+    }
+	else {
+        LOGE("server[%d]: udp         >>> %d data error: %s", server->fd, len, strerror(errno));
+    }
 
-	/* return nret; */
-    return 0;
+	return nret;
 }
 
 static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents) {
