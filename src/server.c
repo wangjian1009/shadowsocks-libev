@@ -1311,15 +1311,12 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         int nret = ikcp_send(server->kcp, server->buf->data, server->buf->len);
         if (nret < 0) {
             if (verbose) {
-                LOGE("listen[%d]: %s: kcp     <<< error, rv=%d", server->listen_ctx->fd, server->peer_name, nret);
+                LOGE("listener[%d]: %s: kcp_send error, len=%d, rv=%d", server->listen_ctx->fd, server->peer_name, (int)server->buf->len, nret);
             }
             ERROR("kcp_input_error");
             close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
             return;
-        }
-        if (verbose) {
-            LOGI("listen[%d]: %s: kcp     <<< %d", server->listen_ctx->fd, server->peer_name, nret);
         }
     }
     else {
@@ -1732,6 +1729,13 @@ close_and_free_server(EV_P_ server_t *server)
             server->query         = NULL;
         }
 
+        /*Loki: kcp*/
+        TIMER_STOP(
+            remote->kcp_watcher,
+            "listener[%d]: %s: kcp [- update]",
+            server->listen_ctx->fd, server->peer_name);
+        /*kcp*/
+
         IO_STOP(
             server->send_ctx->io,
             "listener[%d]: %s: %s [- <<<] | server free",
@@ -1822,6 +1826,8 @@ accept_cb(EV_P_ ev_io *w, int revents)
 			LOGI("listener[%d]: %s: udp >>> %d", listener->fd, server->peer_name, len);
         }
 
+        kcp_timer_reset(server);
+        
         if (kcp_forward_data(EV_A_ server) != 0) {
             close_and_free_remote(EV_A_ server->remote);
             close_and_free_server(EV_A_ server);
