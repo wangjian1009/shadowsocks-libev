@@ -116,6 +116,7 @@ static void resolv_free_cb(void *data);
 
 /*Loki: kcp */
 static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user);
+static void kcp_log(const char *log, ikcpcb *kcp, void *user);
 static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents);
 static void kcp_timer_reset(EV_P_ server_t *server);
 static int kcp_forward_data(EV_P_ server_t  * server);
@@ -1306,7 +1307,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
 
     if (verbose) {
         LOGI(
-            "listener[%d]: %s: svr       <<< %d",
+            "listener[%d]: %s: svr           <<< %d",
             server->listen_ctx->fd, server->peer_name, (int)r);
     }
     
@@ -1335,8 +1336,10 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
             return;
         }
 
-        LOGI("xxxx: kcp send %d", (int)server->buf->len);
-        ikcp_flush(server->kcp);
+        if (verbose) {
+            LOGI("listener[%d]: %s: kcp    <<< %d", server->listen_ctx->fd, server->peer_name, (int)server->buf->len);
+        }
+        server->buf->len = 0;
         
         kcp_timer_reset(EV_A_ server);
     }
@@ -1518,7 +1521,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
 
             if (verbose) {
                 LOGI(
-                    "listener[%d]: %s: svr       >>> %d | %d",
+                    "listener[%d]: %s: svr           >>> %d | %d",
                     server->listen_ctx->fd, server->peer_name, (int)s, (int)(remote->buf->len - s));
             }
 
@@ -1532,7 +1535,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
 
             if (verbose) {
                 LOGI(
-                    "listener[%d]: %s: svr       >>> %d",
+                    "listener[%d]: %s: svr           >>> %d",
                     server->listen_ctx->fd, server->peer_name, (int)s);
             }
             
@@ -1676,6 +1679,8 @@ new_server(int fd_or_conv, listen_ctx_t *listener, const char * peer_name, struc
         server->kcp                 = ikcp_create(fd_or_conv, server);
     
         server->kcp->output	= kcp_output;
+        server->kcp->writelog = kcp_log;
+        server->kcp->logmask = 0xffffffff;
         /* ikcp_wndsize(server->kcp, param->sndwnd, param->rcvwnd); */
         /* ikcp_nodelay(server->kcp, param->nodelay, param->interval, param->resend, param->nc); */
 
@@ -1924,7 +1929,7 @@ static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user) {
     LOGI("xxxx: kcp_output");
     server_t * server = user;
 	int nret = sendto(server->listen_ctx->fd, buf, len, 0, (struct sockaddr *)&server->addr, server->addr_len);
-	if (nret != 0) {
+	if (nret > 0) {
         if (verbose) {
             if (nret != len) {
                 LOGI("listener[%d]: %s: udp <<< %d | %d", server->listen_ctx->fd, server->peer_name, nret, (len - nret));
@@ -1935,12 +1940,15 @@ static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user) {
         }
     }
 	else {
-        if (verbose) {
-            LOGE("listener[%d]: %s: udp <<< %d data error: %s", server->listen_ctx->fd, server->peer_name, len, strerror(errno));
-        }
+        LOGE("listener[%d]: %s: udp <<< %d data error: %s", server->listen_ctx->fd, server->peer_name, len, strerror(errno));
     }
 
 	return nret;
+}
+
+static void kcp_log(const char *log, ikcpcb *kcp, void *user) {
+    server_t * server = user;
+    LOGI("listener[%d]: %s: kcp                                                | %s", server->listen_ctx->fd, server->peer_name, log);
 }
 
 static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents) {
@@ -1952,13 +1960,13 @@ static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents) {
 
     millisec = (IUINT32)(ptv.tv_usec / 1000) + (IUINT32)ptv.tv_sec * 1000;
     ikcp_update(server->kcp, millisec);
-    //LOGI("XXXX: update, len=%d", (int)server->buf->len);
+    LOGI("XXXX: update, len=%d", (int)server->buf->len);
 
     kcp_timer_reset(EV_A_ server);
 }
 
 static void kcp_timer_reset(EV_P_ server_t *server) {
-    TIMER_STOP(server->kcp_watcher, ""); //"listener[%d]: %s: kcp [- update]", server->listen_ctx->fd, server->peer_name);
+    TIMER_STOP(server->kcp_watcher, "listener[%d]: %s: kcp [- update]", server->listen_ctx->fd, server->peer_name);
 
     struct timeval ptv;
     gettimeofday(&ptv, NULL);
@@ -1967,14 +1975,12 @@ static void kcp_timer_reset(EV_P_ server_t *server) {
     IUINT32 update_ms = ikcp_check(server->kcp, current_ms);
 
     ev_timer_set(&server->kcp_watcher, (float)(update_ms - current_ms) / 1000.0f, 0);
-    TIMER_START(server->kcp_watcher, ""); //"listener[%d]: %s: kcp [+ update]", server->listen_ctx->fd, server->peer_name);
+    TIMER_START(server->kcp_watcher, "listener[%d]: %s: kcp [+ update]", server->listen_ctx->fd, server->peer_name);
 }
 
 static int kcp_forward_data(EV_P_ server_t  * server)
 {
     assert(server->kcp);
-
-    LOGI("XXXX forward");
 
     if (server->buf->len != 0) {
         LOGI("listener[%d]: %s: forward skip for buf with data", server->listen_ctx->fd, server->peer_name);
