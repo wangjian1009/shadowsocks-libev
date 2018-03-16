@@ -1734,7 +1734,7 @@ close_and_free_server(EV_P_ server_t *server)
         /*Loki: kcp*/
         TIMER_STOP(
             server->kcp_watcher,
-            "listener[%d]: %s: kcp [- update]",
+            "listener[%d]: %s: kcp [- update] | server free",
             server->listen_ctx->fd, server->peer_name);
         /*kcp*/
 
@@ -1930,24 +1930,22 @@ static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents) {
 
     millisec = (IUINT32)(ptv.tv_usec / 1000) + (IUINT32)ptv.tv_sec * 1000;
     ikcp_update(server->kcp, millisec);
-    //LOGI("XXXX: update, len=%d", (int)server->buf->len);
+    LOGI("XXXX: update, len=%d", (int)server->buf->len);
 
     kcp_timer_reset(EV_A_ server);
 }
 
 static void kcp_timer_reset(EV_P_ server_t *server) {
-    TIMER_STOP(server->kcp_watcher, "%s: kcp [- update]", server->peer_name);
+    TIMER_STOP(server->kcp_watcher, "listener[%d]: %s: kcp [- update]", server->listen_ctx->fd, server->peer_name);
 
-    if (1) {
-        struct timeval ptv;
-        gettimeofday(&ptv, NULL);
+    struct timeval ptv;
+    gettimeofday(&ptv, NULL);
 
-        IUINT32 current_ms  = (IUINT32)(ptv.tv_usec / 1000) + (IUINT32)ptv.tv_sec * 1000;
-        IUINT32 update_ms = ikcp_check(server->kcp, current_ms);
+    IUINT32 current_ms  = (IUINT32)(ptv.tv_usec / 1000) + (IUINT32)ptv.tv_sec * 1000;
+    IUINT32 update_ms = ikcp_check(server->kcp, current_ms);
 
-        ev_timer_set(&server->kcp_watcher, (float)(update_ms - current_ms) / 1000.0f, 0);
-        TIMER_START(server->kcp_watcher, "");
-    }
+    ev_timer_set(&server->kcp_watcher, (float)(update_ms - current_ms) / 1000.0f, 0);
+    TIMER_START(server->kcp_watcher, "listener[%d]: %s: kcp [+ update]", server->listen_ctx->fd, server->peer_name);
 }
 
 static int kcp_forward_data(EV_P_ server_t  * server)
