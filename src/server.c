@@ -1433,8 +1433,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
         return;
     } else {
         // has data to send
-        ssize_t s = send(remote->fd, remote->buf->data + remote->buf->idx,
-                         remote->buf->len, 0);
+        ssize_t s = send(remote->fd, remote->buf->data + remote->buf->idx, remote->buf->len, 0);
         if (s == -1) {
             if (errno != EAGAIN && errno != EWOULDBLOCK) {
                 ERROR("remote_send_send");
@@ -1445,6 +1444,13 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
             return;
         } else if (s < remote->buf->len) {
             // partly sent, move memory, wait for the next time to send
+
+            if (verbose) {
+                LOGI(
+                    "listener[%d]: %s: remote       >>> %d | %d",
+                    server->listen_ctx->fd, server->peer_name, (int)s, (int)(remote->buf->len - s));
+            }
+
             remote->buf->len -= s;
             remote->buf->idx += s;
             return;
@@ -1453,6 +1459,12 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
             remote->buf->len = 0;
             remote->buf->idx = 0;
 
+            if (verbose) {
+                LOGI(
+                    "listener[%d]: %s: remote       >>> %d",
+                    server->listen_ctx->fd, server->peer_name, (int)s);
+            }
+            
             IO_STOP(
                 remote->send_ctx->io,
                 "listener[%d]: %s: remote [- >>>] | remote send complete",
@@ -1749,12 +1761,12 @@ accept_cb(EV_P_ ev_io *w, int revents)
 
 		int nret = ikcp_input(server->kcp, buf, len);
 		if (nret < 0) {
-			LOGE("listener[%d]: %s: kcp     >>> error(%d)", listener->fd, server->peer_name, nret);
+			LOGE("listener[%d]: %s: udp >>> %d kcp input error(%d)", listener->fd, server->peer_name, len, nret);
             return;
 		}
 
         if (verbose) {
-			LOGI("listener[%d]: %s: kcp     >>> %d", listener->fd, server->peer_name, nret);
+			LOGI("listener[%d]: %s: udp >>> %d", listener->fd, server->peer_name, len);
         }
 
         if (kcp_forward_data(EV_A_ server) != 0) {
@@ -1892,11 +1904,17 @@ static int kcp_forward_data(EV_P_ server_t  * server)
     if (nrecv < 0) {
         if (nrecv == -3) {
             LOGE("listener[%d]: %s: kcp recv error, obuf is small, need to extend it", server->listen_ctx->fd, server->peer_name);
+            return -1;
         }
         return 0;
     }
 
-
+    if (verbose) {
+        LOGI(
+            "listener[%d]: %s: kcp     >>> %d",
+            server->listen_ctx->fd, server->peer_name, nrecv);
+    }
+    
     tx      += nrecv;
     buf->len = nrecv;
 
