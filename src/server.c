@@ -118,7 +118,7 @@ static void resolv_free_cb(void *data);
 static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user);
 static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents);
 static void kcp_timer_reset(EV_P_ server_t *server);
-static void kcp_forward_data(server_t  * server);
+static int kcp_forward_data(EV_P_ server_t  * server);
 static server_t * kcp_find_server(int conv, struct sockaddr_storage * addr);
 /**/
 
@@ -760,73 +760,31 @@ setTosFromConnmark(remote_t *remote, server_t *server)
 
 #endif
 
-static void
-server_recv_cb(EV_P_ ev_io *w, int revents)
+static int
+server_process_data(EV_P_ server_t * server, buffer_t *buf)
 {
-    server_t *server              = ((server_ctx_t *)w)->server;
-    remote_t *remote              = NULL;
-
-    assert(! server->kcp);
-    
-    buffer_t *buf = server->buf;
-
-    if (server->stage == STAGE_STREAM) {
-        remote = server->remote;
-        buf    = remote->buf;
-
-        ev_timer_again(EV_A_ & server->recv_ctx->watcher);
-    }
-
-    assert(!server->kcp);
-    ssize_t r = recv(server->fd_or_conv, buf->data, BUF_SIZE, 0);
-
-    if (r == 0) {
-        // connection closed
-        if (verbose) {
-            LOGI("server_recv close the connection");
-        }
-        close_and_free_remote(EV_A_ remote);
-        close_and_free_server(EV_A_ server);
-        return;
-    } else if (r == -1) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            // no data
-            // continue to wait for recv
-            return;
-        } else {
-            ERROR("server recv");
-            close_and_free_remote(EV_A_ remote);
-            close_and_free_server(EV_A_ server);
-            return;
-        }
-    }
-
-    tx      += r;
-    buf->len = r;
-
     int err = crypto->decrypt(buf, server->d_ctx, BUF_SIZE);
 
     if (err == CRYPTO_ERROR) {
         assert(!server->kcp);
         report_addr(server->fd_or_conv, MALICIOUS, "authentication error");
-        close_and_free_remote(EV_A_ remote);
-        close_and_free_server(EV_A_ server);
-        return;
+        return -1;
     } else if (err == CRYPTO_NEED_MORE) {
         if (server->stage != STAGE_STREAM && server->frag > MAX_FRAG) {
             assert(!server->kcp);
             report_addr(server->fd_or_conv, MALICIOUS, "malicious fragmentation");
-            close_and_free_remote(EV_A_ remote);
-            close_and_free_server(EV_A_ server);
-            return;
+            return -1;
         }
         server->frag++;
-        return;
+        return 0;
     }
 
     // handshake and transmit data
     if (server->stage == STAGE_STREAM) {
-        int s = send(remote->fd, remote->buf->data, remote->buf->len, 0);
+        remote_t * remote = server->remote;
+        assert(remote);
+        
+        int s = send(remote->fd, buf->data, buf->len, 0);
         if (s == -1) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 // no data, wait for send
@@ -841,8 +799,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                     server->listen_ctx->fd, server->peer_name);
             } else {
                 ERROR("server_recv_send");
-                close_and_free_remote(EV_A_ remote);
-                close_and_free_server(EV_A_ server);
+                return -1;
             }
         } else if (s < remote->buf->len) {
             remote->buf->len -= s;
@@ -856,7 +813,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 "listener[%d]: %s: remote [+ >>>] | send in process",
                 server->listen_ctx->fd, server->peer_name);
         }
-        return;
+        return 0;
     } else if (server->stage == STAGE_INIT) {
         /*
          * Shadowsocks TCP Relay Header:
@@ -893,8 +850,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             } else {
                 assert(!server->kcp);
                 report_addr(server->fd_or_conv, MALFORMED, "invalid length for ipv4 address");
-                close_and_free_server(EV_A_ server);
-                return;
+                return -1;
             }
             addr->sin_port   = *(uint16_t *)(server->buf->data + offset);
             info.ai_family   = AF_INET;
@@ -911,14 +867,12 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             } else {
                 assert(!server->kcp);
                 report_addr(server->fd_or_conv, MALFORMED, "invalid host name length");
-                close_and_free_server(EV_A_ server);
-                return;
+                return -1;
             }
             if (acl && outbound_block_match_host(host) == 1) {
                 if (verbose)
                     LOGI("outbound blocked %s", host);
-                close_and_free_server(EV_A_ server);
-                return;
+                return -1;
             }
             struct cork_ip ip;
             if (cork_ip_init(&ip, host) != -1) {
@@ -945,8 +899,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 if (!validate_hostname(host, name_len)) {
                     assert(!server->kcp);
                     report_addr(server->fd_or_conv, MALFORMED, "invalid host name");
-                    close_and_free_server(EV_A_ server);
-                    return;
+                    return -1;
                 }
                 need_query = 1;
             }
@@ -964,8 +917,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 LOGE("invalid header with addr type %d", atyp);
                 assert(!server->kcp);
                 report_addr(server->fd_or_conv, MALFORMED, "invalid length for ipv6 address");
-                close_and_free_server(EV_A_ server);
-                return;
+                return -1;
             }
             addr->sin6_port  = *(uint16_t *)(server->buf->data + offset);
             info.ai_family   = AF_INET6;
@@ -978,8 +930,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         if (offset == 1) {
             assert(!server->kcp);
             report_addr(server->fd_or_conv, MALFORMED, "invalid address type");
-            close_and_free_server(EV_A_ server);
-            return;
+            return -1;
         }
 
         port = (*(uint16_t *)(server->buf->data + offset));
@@ -989,8 +940,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         if (server->buf->len < offset) {
             assert(!server->kcp);
             report_addr(server->fd_or_conv, MALFORMED, "invalid request length");
-            close_and_free_server(EV_A_ server);
-            return;
+            return -1;
         } else {
             server->buf->len -= offset;
             memmove(server->buf->data, server->buf->data + offset, server->buf->len);
@@ -1008,8 +958,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
             if (remote == NULL) {
                 LOGE("connect error");
-                close_and_free_server(EV_A_ server);
-                return;
+                return -1;
             } else {
                 server->remote = remote;
                 remote->server = server;
@@ -1054,10 +1003,59 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             resolv_start(host, port, resolv_cb, resolv_free_cb, query);
         }
 
-        return;
+        return 0;
     }
     // should not reach here
     FATAL("server context error");
+    return -1;
+}
+
+static void
+server_recv_cb(EV_P_ ev_io *w, int revents)
+{
+    server_t *server              = ((server_ctx_t *)w)->server;
+
+    assert(! server->kcp);
+    
+    buffer_t *buf = server->buf;
+
+    if (server->stage == STAGE_STREAM) {
+        assert(server->remote);
+        buf    = server->remote->buf;
+        ev_timer_again(EV_A_ & server->recv_ctx->watcher);
+    }
+
+    assert(!server->kcp);
+    ssize_t r = recv(server->fd_or_conv, buf->data, BUF_SIZE, 0);
+
+    if (r == 0) {
+        // connection closed
+        if (verbose) {
+            LOGI("server_recv close the connection");
+        }
+        close_and_free_remote(EV_A_ server->remote);
+        close_and_free_server(EV_A_ server);
+        return;
+    } else if (r == -1) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            // no data
+            // continue to wait for recv
+            return;
+        } else {
+            ERROR("server recv");
+            close_and_free_remote(EV_A_ server->remote);
+            close_and_free_server(EV_A_ server);
+            return;
+        }
+    }
+
+    tx      += r;
+    buf->len = r;
+
+    if (server_process_data(EV_A_ server, buf) != 0) {
+        close_and_free_remote(EV_A_ server->remote);
+        close_and_free_server(EV_A_ server);
+    }
 }
 
 static void
@@ -1757,7 +1755,10 @@ accept_cb(EV_P_ ev_io *w, int revents)
 			LOGI("listener[%d]: %s: kcp     >>> %d", listener->fd, server->peer_name, nret);
         }
 
-        kcp_forward_data(server);
+        if (kcp_forward_data(EV_A_ server) != 0) {
+            if (server->remote) close_and_free_remote(EV_A_ server->remote);
+            close_and_free_server(EV_A_ server);
+        }
     }
     else {
         int fd = accept(listener->fd, NULL, NULL);
@@ -1874,23 +1875,34 @@ static void kcp_timer_reset(EV_P_ server_t *server) {
     }
 }
 
-static void kcp_forward_data(server_t  * server)
+static int kcp_forward_data(EV_P_ server_t  * server)
 {
-	while(1) {
-		char obuf[2046] = {0};
-		int nrecv = ikcp_recv(server->kcp, obuf, sizeof(obuf));
-		if (nrecv < 0) {
-			if (nrecv == -3) {
-				LOGE("listener[%d]: %s: kcp recv error, obuf is small, need to extend it", server->listen_ctx->fd, server->peer_name);
-            }
-			break;
-		}
+    assert(server->kcp);
+    
+    buffer_t *buf = server->buf;
+    if (server->stage == STAGE_STREAM) {
+        assert(server->remote);
+        buf    = server->remote->buf;
+        ev_timer_again(EV_A_ & server->recv_ctx->watcher);
+    }
 
-		/* if (task->bev) */
-		/* 	evbuffer_add(bufferevent_get_output(task->bev), obuf, nrecv); */
-		/* else */
-		/* 	debug(LOG_INFO, "this task has finished"); */
-	}
+    int nrecv = ikcp_recv(server->kcp, buf->data, BUF_SIZE);
+    if (nrecv < 0) {
+        if (nrecv == -3) {
+            LOGE("listener[%d]: %s: kcp recv error, obuf is small, need to extend it", server->listen_ctx->fd, server->peer_name);
+        }
+        return 0;
+    }
+
+
+    tx      += nrecv;
+    buf->len = nrecv;
+
+    if (server_process_data(EV_A_ server, buf) != 0) {
+        return -1;
+    }
+
+    return 0;
 }
 
 static server_t * kcp_find_server(int conv, struct sockaddr_storage * addr) {
