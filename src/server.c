@@ -101,7 +101,9 @@ static void server_timeout_cb(EV_P_ ev_timer *watcher, int revents);
 static void block_list_clear_cb(EV_P_ ev_timer *watcher, int revents);
 
 static remote_t *new_remote(int fd);
-static server_t *new_server(int fd_or_conv, listen_ctx_t *listener);
+static server_t *new_server(
+    int fd_or_conv, listen_ctx_t *listener,
+    const char * peer_name, struct sockaddr_storage * addr, int addr_len);
 static remote_t *connect_to_remote(EV_P_ struct addrinfo *res,
                                    server_t *server);
 
@@ -282,26 +284,32 @@ free_connections(struct ev_loop *loop)
 }
 
 static char *
+get_name_from_addr(struct sockaddr_storage * addr, socklen_t addr_len) {
+    static char name[INET6_ADDRSTRLEN] = { 0 };
+    memset(name, 0, sizeof(name));
+
+    if (addr->ss_family == AF_INET) {
+        struct sockaddr_in *s = (struct sockaddr_in *)addr;
+        inet_ntop(AF_INET, &s->sin_addr, name, INET_ADDRSTRLEN);
+    } else if (addr->ss_family == AF_INET6) {
+        struct sockaddr_in6 *s = (struct sockaddr_in6 *)addr;
+        inet_ntop(AF_INET6, &s->sin6_addr, name, INET6_ADDRSTRLEN);
+    }
+    return name;
+}
+
+static char *
 get_peer_name(int fd)
 {
-    static char peer_name[INET6_ADDRSTRLEN] = { 0 };
     struct sockaddr_storage addr;
     socklen_t len = sizeof(struct sockaddr_storage);
     memset(&addr, 0, len);
-    memset(peer_name, 0, INET6_ADDRSTRLEN);
     int err = getpeername(fd, (struct sockaddr *)&addr, &len);
     if (err == 0) {
-        if (addr.ss_family == AF_INET) {
-            struct sockaddr_in *s = (struct sockaddr_in *)&addr;
-            inet_ntop(AF_INET, &s->sin_addr, peer_name, INET_ADDRSTRLEN);
-        } else if (addr.ss_family == AF_INET6) {
-            struct sockaddr_in6 *s = (struct sockaddr_in6 *)&addr;
-            inet_ntop(AF_INET6, &s->sin6_addr, peer_name, INET6_ADDRSTRLEN);
-        }
+        return get_name_from_addr(&addr, len);
     } else {
         return NULL;
     }
-    return peer_name;
 }
 
 #ifdef __linux__
@@ -1545,7 +1553,7 @@ close_and_free_remote(EV_P_ remote_t *remote)
 }
 
 static server_t *
-new_server(int fd_or_conv, listen_ctx_t *listener)
+new_server(int fd_or_conv, listen_ctx_t *listener, const char * peer_name, struct sockaddr_storage * addr, int addr_len)
 {
     if (verbose) {
         server_conn++;
@@ -1576,6 +1584,10 @@ new_server(int fd_or_conv, listen_ctx_t *listener)
     crypto->ctx_init(crypto->cipher, server->e_ctx, 1);
     crypto->ctx_init(crypto->cipher, server->d_ctx, 0);
 
+    strncpy(server->peer_name, peer_name, sizeof(server->peer_name));
+    memcpy(&server->addr, addr, addr_len);
+    server->addr_len = addr_len;
+    
     /*Loki: init kcmp*/
     if (listener->use_kcp) {
         server->kcp                 = ikcp_create(fd_or_conv, server);
@@ -1709,7 +1721,7 @@ accept_cb(EV_P_ ev_io *w, int revents)
     listen_ctx_t *listener = (listen_ctx_t *)w;
 
     if (listener->use_kcp) {
-        struct sockaddr_in clientaddr;
+        struct sockaddr_storage clientaddr;
         int clientlen = sizeof(clientaddr);
         memset(&clientaddr, 0, clientlen);
 	
@@ -1724,7 +1736,11 @@ accept_cb(EV_P_ ev_io *w, int revents)
 
         server_t * server = kcp_find_server(conv);
         if (server == NULL) {
-            server = new_server(conv, listener);
+            char peer_name[INET6_ADDRSTRLEN + 20];
+            snprintf(peer_name, sizeof(peer_name), "%s{%d}", get_name_from_addr(&clientaddr, clientlen), conv);
+            
+            server = new_server(conv, listener, peer_name, &clientaddr, clientlen);
+
             TIMER_START(
                 server->recv_ctx->watcher,
                 "listener[%d]: server[%d]: udp [+ <<< timer]",
@@ -1750,7 +1766,17 @@ accept_cb(EV_P_ ev_io *w, int revents)
             return;
         }
 
-        char *peer_name = get_peer_name(fd);
+        struct sockaddr_storage addr;
+        socklen_t len = sizeof(struct sockaddr_storage);
+        memset(&addr, 0, len);
+        int err = getpeername(fd, (struct sockaddr *)&addr, &len);
+        if (err != 0) {
+			LOGE("listener[%d]: accept get peername error, %s", listener->fd, strerror(errno));
+            close(fd);
+            return;
+        }
+        
+        char *peer_name = get_name_from_addr(&addr, len);
         if (peer_name != NULL) {
             int in_white_list = 0;
             if (acl) {
@@ -1785,7 +1811,7 @@ accept_cb(EV_P_ ev_io *w, int revents)
             LOGI("accept a connection");
         }
 
-        server_t *server = new_server(fd, listener);
+        server_t *server = new_server(fd, listener, peer_name, &addr, len);
         IO_START(
             server->recv_ctx->io,
             "listener[%d]: server[%d]: tcp [+ >>>] | accept success",
@@ -1801,19 +1827,19 @@ accept_cb(EV_P_ ev_io *w, int revents)
 /*Loki: kcp */
 static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user) {
     server_t * server = user;
-	int nret = sendto(server->fd, buf, len, 0, (struct sockaddr *)&server->addr, server->addr_len);
+	int nret = sendto(server->listen_ctx->fd, buf, len, 0, (struct sockaddr *)&server->addr, server->addr_len);
 	if (nret != 0) {
         if (verbose) {
             if (nret != len) {
-                LOGI("server[%d]: udp         >>> %d | %d", server->fd, nret, (len - nret));
+                LOGI("listener[%d]: server[%d]: udp <<< %d | %d", server->listen_ctx->fd, server->fd_or_conv, nret, (len - nret));
             }
             else {
-                LOGI("server[%d]: udp         >>> %d", server->fd, nret);
+                LOGI("listener[%d]: server[%d]: udp <<< %d", server->listen_ctx->fd, server->fd_or_conv, nret);
             }
         }
     }
 	else {
-        LOGE("server[%d]: udp         >>> %d data error: %s", server->fd, len, strerror(errno));
+        LOGE("listener[%d]: server[%d]: udp <<< %d data error: %s", server->listen_ctx->fd, server->fd_or_conv, len, strerror(errno));
     }
 
 	return nret;

@@ -78,6 +78,7 @@ typedef struct server {
     int fd_or_conv;
     int stage;
     int frag;
+    char peer_name[INET6_ADDRSTRLEN + 32];
 
     ikcpcb *kcp;
     ev_timer kcp_watcher;
