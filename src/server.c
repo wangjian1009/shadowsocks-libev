@@ -1704,6 +1704,10 @@ new_server(int fd_or_conv, listen_ctx_t *listener, const char * peer_name, struc
 
     cork_dllist_add(&connections, &server->entries);
 
+    if (verbose) {
+        LOGI("listener[%d]: %s: create", server->listen_ctx->fd, server->peer_name);
+    }
+    
     return server;
 }
 
@@ -1743,6 +1747,10 @@ free_server(server_t *server)
     if (server->kcp != NULL) {
         ikcp_release(server->kcp);
         server->kcp = NULL;
+    }
+
+    if (verbose) {
+        LOGI("listener[%d]: %s: free", server->listen_ctx->fd, server->peer_name);
     }
     
     ss_free(server->recv_ctx);
@@ -1836,7 +1844,7 @@ accept_cb(EV_P_ ev_io *w, int revents)
         server_t * server = kcp_find_server(conv, &clientaddr);
         if (server == NULL) {
             char peer_name[INET6_ADDRSTRLEN + 20];
-            snprintf(peer_name, sizeof(peer_name), "%s{%d}", get_name_from_addr(&clientaddr, clientlen, 1), conv);
+            snprintf(peer_name, sizeof(peer_name), "%s[%d]", get_name_from_addr(&clientaddr, clientlen, 1), conv);
             
             server = new_server(conv, listener, peer_name, &clientaddr, clientlen);
 
