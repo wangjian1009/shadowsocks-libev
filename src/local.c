@@ -1248,8 +1248,16 @@ new_remote(int fd, int timeout, uint8_t use_kcp)
         conv++;
     
         remote->kcp->output	= kcp_output;
-        /* ikcp_wndsize(remote->kcp, param->sndwnd, param->rcvwnd); */
-        /* ikcp_nodelay(remote->kcp, param->nodelay, param->interval, param->resend, param->nc); */
+
+        ikcp_wndsize(
+            remote->kcp,
+            remote->server->listener->kcp_sndwnd,
+            remote->server->listener->kcp_rcvwnd);
+
+        ikcp_nodelay(
+            remote->kcp,
+            remote->server->listener->kcp_nodelay, remote->server->listener->kcp_interval,
+            remote->server->listener->kcp_resend, remote->server->listener->kcp_nc);
 
         remote->kcp_watcher.data = remote;
         ev_timer_init(&remote->kcp_watcher, kcp_update_cb, 0.001, 0.001);
@@ -1606,12 +1614,12 @@ main(int argc, char **argv)
     int mtu          = 0;
     int mptcp        = 0;
     uint8_t use_kcp  = 0;
-	/* int kcp_sndwnd;			// sndwnd */
-	/* int kcp_rcvwnd;			// rcvwnd */
-	/* int kcp_nodelay;		// nodelay */
-	/* int kcp_interval;		// interval */
-	/* int kcp_resend;			// resend */
-	/* int kcp_nc; 			// no congestion */
+    int kcp_sndwnd  = 1024;
+	int kcp_rcvwnd  = 1024;
+	int kcp_nodelay = 0;	
+	int kcp_interval= 20;
+	int kcp_resend  = 2;
+	int kcp_nc      = 1;
     
     char *user       = NULL;
     char *local_port = NULL;
@@ -1989,6 +1997,12 @@ main(int argc, char **argv)
     listen_ctx.iface   = iface;
     listen_ctx.mptcp   = mptcp;
     listen_ctx.use_kcp = use_kcp;
+    listen_ctx.kcp_sndwnd = kcp_sndwnd;
+    listen_ctx.kcp_rcvwnd = kcp_rcvwnd;
+    listen_ctx.kcp_nodelay = kcp_nodelay;
+    listen_ctx.kcp_interval = kcp_interval;
+    listen_ctx.kcp_resend = kcp_resend;
+    listen_ctx.kcp_nc = kcp_nc;
 
     // Setup signal handler
     ev_signal_init(&sigint_watcher, signal_cb, SIGINT);
