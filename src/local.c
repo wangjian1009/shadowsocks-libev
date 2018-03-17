@@ -134,7 +134,7 @@ static void close_and_free_remote(EV_P_ remote_t *remote);
 static void free_server(server_t *server);
 static void close_and_free_server(EV_P_ server_t *server);
 
-static remote_t *new_remote(int fd, int timeout, uint8_t use_kcp);
+static remote_t *new_remote(listen_ctx_t *listener, int fd, int timeout, uint8_t use_kcp);
 static server_t *new_server(int fd);
 
 /*Loki: */
@@ -1222,7 +1222,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
 }
 
 static remote_t *
-new_remote(int fd, int timeout, uint8_t use_kcp)
+new_remote(listen_ctx_t *listener, int fd, int timeout, uint8_t use_kcp)
 {
     remote_t *remote;
     remote = ss_malloc(sizeof(remote_t));
@@ -1251,13 +1251,13 @@ new_remote(int fd, int timeout, uint8_t use_kcp)
 
         ikcp_wndsize(
             remote->kcp,
-            remote->server->listener->kcp_sndwnd,
-            remote->server->listener->kcp_rcvwnd);
+            listener->kcp_sndwnd,
+            listener->kcp_rcvwnd);
 
         ikcp_nodelay(
             remote->kcp,
-            remote->server->listener->kcp_nodelay, remote->server->listener->kcp_interval,
-            remote->server->listener->kcp_resend, remote->server->listener->kcp_nc);
+            listener->kcp_nodelay, listener->kcp_interval,
+            listener->kcp_resend, listener->kcp_nc);
 
         remote->kcp_watcher.data = remote;
         ev_timer_init(&remote->kcp_watcher, kcp_update_cb, 0.001, 0.001);
@@ -1463,7 +1463,7 @@ create_remote(listen_ctx_t *listener,
     }
 #endif
 
-    remote_t *remote = new_remote(remotefd, listener->timeout, listener->use_kcp);
+    remote_t *remote = new_remote(listener, remotefd, listener->timeout, listener->use_kcp);
     remote->addr_len = get_sockaddr_len(remote_addr);
     memcpy(&(remote->addr), remote_addr, remote->addr_len);
 

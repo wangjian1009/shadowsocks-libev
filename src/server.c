@@ -1102,7 +1102,7 @@ server_send_cb(EV_P_ ev_io *w, int revents)
         // close and free
         if (verbose) {
             LOGI(
-                "listener[%d]: %s: close connection(server send no data)",
+                "listener[%d]: %s: tcp close connection(server send no data)",
                 server->listen_ctx->fd, server->peer_name);
         }
         close_and_free_remote(EV_A_ remote);
@@ -1286,7 +1286,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     if (r == 0) {
         // connection closed
         if (verbose) {
-            LOGI("listener[%d]: %s: close the connection(remote receive)", server->listen_ctx->fd, server->peer_name);
+            LOGI("listener[%d]: %s: svr close the connection(remote receive)", server->listen_ctx->fd, server->peer_name);
         }
         if (server->kcp) ikcp_flush(server->kcp);
         close_and_free_remote(EV_A_ remote);
@@ -1298,7 +1298,14 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
             // continue to wait for recv
             return;
         } else {
+            if (verbose) {
+                LOGE(
+                    "listener[%d]: %s: svr close the connection(remote receive error %s)",
+                    server->listen_ctx->fd, server->peer_name, strerror(errno));
+            }
+            
             ERROR("remote recv");
+            if (server->kcp) ikcp_flush(server->kcp);
             close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
             return;
@@ -1857,7 +1864,7 @@ accept_cb(EV_P_ ev_io *w, int revents)
 
             TIMER_START(
                 server->recv_ctx->watcher,
-                "listener[%d]: %s: udp [+ <<< timer]",
+                "listener[%d]: %s: udp [+ <<< timeout]",
                 listener->fd, server->peer_name);
         }
 
@@ -1939,7 +1946,7 @@ accept_cb(EV_P_ ev_io *w, int revents)
 
         TIMER_START(
             server->recv_ctx->watcher,
-            "listener[%d]: %s: tcp [+ >>> timer] | accept success",
+            "listener[%d]: %s: tcp [+ >>> timeout] | accept success",
             server->listen_ctx->fd, server->peer_name);
     }
 }
@@ -1979,7 +1986,6 @@ static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents) {
 
     millisec = (IUINT32)(ptv.tv_usec / 1000) + (IUINT32)ptv.tv_sec * 1000;
     ikcp_update(server->kcp, millisec);
-    LOGI("XXXX: update, len=%d", (int)server->buf->len);
 
     kcp_timer_reset(EV_A_ server);
 }
