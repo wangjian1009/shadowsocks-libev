@@ -2007,7 +2007,7 @@ static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents) {
 }
 
 static void kcp_timer_reset(EV_P_ server_t *server) {
-    TIMER_STOP(server->kcp_watcher, "listener[%d]: %s: kcp [- update]", server->listen_ctx->fd, server->peer_name);
+    TIMER_STOP(server->kcp_watcher, ""); //"listener[%d]: %s: kcp [- update]", server->listen_ctx->fd, server->peer_name);
 
     struct timeval ptv;
     gettimeofday(&ptv, NULL);
@@ -2017,7 +2017,7 @@ static void kcp_timer_reset(EV_P_ server_t *server) {
 
     float delay = (float)(update_ms - current_ms) / 1000.0f;
     ev_timer_set(&server->kcp_watcher, delay, 0.0f);
-    TIMER_START(server->kcp_watcher, "listener[%d]: %s: kcp [+ update] delay %.5f", server->listen_ctx->fd, server->peer_name, delay);
+    TIMER_START(server->kcp_watcher, ""); //"listener[%d]: %s: kcp [+ update] delay %.5f", server->listen_ctx->fd, server->peer_name, delay);
 }
 
 static int kcp_forward_data(EV_P_ server_t  * server)

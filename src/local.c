@@ -140,6 +140,7 @@ static server_t *new_server(int fd);
 /*Loki: */
 static ssize_t send_to_remote(EV_P_ remote_t *remote, const void *buffer, size_t length);
 static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user);
+static void kcp_log(const char *log, ikcpcb *kcp, void *user);
 static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents);
 static void kcp_timer_reset(EV_P_ remote_t *remote);
 
@@ -327,6 +328,10 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         }
         
         if (r == 0) {
+            if (verbose) {
+                LOGI("server[%d]: free(cli recv)", server->fd);
+            }
+            
             // connection closed
             close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
@@ -337,8 +342,9 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 // continue to wait for recv
                 return;
             } else {
-                if (verbose)
-                    ERROR("server_recv_cb_recv");
+                if (verbose) {
+                    LOGE("server[%d]: free(cli recv error %s)", server->fd, strerror(errno));
+                }
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
                 return;
@@ -364,7 +370,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 int err = crypto->encrypt(remote->buf, server->e_ctx, BUF_SIZE);
 
                 if (err) {
-                    LOGE("invalid password or cipher");
+                    LOGE("server[%d]: free(invalid password or cipher)", server->fd);
                     close_and_free_remote(EV_A_ remote);
                     close_and_free_server(EV_A_ server);
                     return;
@@ -405,7 +411,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                     int r = connect(remote->fd, (struct sockaddr *)&(remote->addr), remote->addr_len);
 
                     if (r == -1 && errno != CONNECT_IN_PROGRESS) {
-                        ERROR("connect");
+                        LOGE("server[%d]: free(remote connect error %s)", server->fd, strerror(errno));
                         close_and_free_remote(EV_A_ remote);
                         close_and_free_server(EV_A_ server);
                         return;
@@ -496,8 +502,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                             if (!remote->kcp) IO_START(remote->send_ctx->io, "server[%d]: tcp [+ >>>] | connect in process", server->fd);
                             return;
                         } else {
-                            if (errno == EOPNOTSUPP || errno == EPROTONOSUPPORT ||
-                                    errno == ENOPROTOOPT) {
+                            if (errno == EOPNOTSUPP || errno == EPROTONOSUPPORT || errno == ENOPROTOOPT) {
                                 LOGE("fast open is not supported on this platform");
                                 // just turn it off
                                 fast_open = 0;
@@ -528,7 +533,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                         if (!remote->kcp) IO_START(remote->send_ctx->io, "server[%d]: tcp [+ >>>] | send to remote block", server->fd);
                         return;
                     } else {
-                        ERROR("server_recv_cb_send");
+                        LOGE("server[%d]: free(remote connect error %s)", server->fd, strerror(errno));
                         close_and_free_remote(EV_A_ remote);
                         close_and_free_server(EV_A_ server);
                         return;
@@ -1249,6 +1254,11 @@ new_remote(listen_ctx_t *listener, int fd, int timeout, uint8_t use_kcp)
     
         remote->kcp->output	= kcp_output;
 
+        if (verbose) {
+            remote->kcp->writelog = kcp_log;
+            remote->kcp->logmask = 0xffffffff;
+        }
+
         ikcp_wndsize(
             remote->kcp,
             listener->kcp_sndwnd,
@@ -1562,6 +1572,12 @@ static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user) {
 	return nret;
 }
 
+static void kcp_log(const char *log, ikcpcb *kcp, void *user) {
+    remote_t * remote = user;
+    server_t * server = remote->server;
+    LOGI("server[%d]: kcp                                                | %s", server->fd, log);
+}
+
 static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents) {
     remote_t * remote = watcher->data;
     server_t * server = remote->server;
@@ -1591,16 +1607,15 @@ static void kcp_timer_reset(EV_P_ remote_t *remote) {
     
     TIMER_STOP(remote->kcp_watcher, "server[%d]: kcp [- update]", server->fd);
 
-    if (1) {
-        struct timeval ptv;
-        gettimeofday(&ptv, NULL);
+    struct timeval ptv;
+    gettimeofday(&ptv, NULL);
 
-        IUINT32 current_ms  = (IUINT32)(ptv.tv_usec / 1000) + (IUINT32)ptv.tv_sec * 1000;
-        IUINT32 update_ms = ikcp_check(remote->kcp, current_ms);
+    IUINT32 current_ms  = (IUINT32)(ptv.tv_usec / 1000) + (IUINT32)ptv.tv_sec * 1000;
+    IUINT32 update_ms = ikcp_check(remote->kcp, current_ms);
 
-        ev_timer_set(&remote->kcp_watcher, (float)(update_ms - current_ms) / 1000.0f, 0);
-        TIMER_START(remote->kcp_watcher, "");
-    }
+    float delay = (float)(update_ms - current_ms) / 1000.0f;
+    ev_timer_set(&remote->kcp_watcher, delay, 0);
+    TIMER_START(remote->kcp_watcher, "server[%d]: kcp [+ update] delay %.5f", server->fd, delay);
 }
 
 /**/
