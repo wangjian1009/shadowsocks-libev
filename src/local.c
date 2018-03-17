@@ -342,9 +342,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 // continue to wait for recv
                 return;
             } else {
-                if (verbose) {
-                    LOGE("server[%d]: free(cli recv error %s)", server->fd, strerror(errno));
-                }
+                LOGE("server[%d]: free(cli recv error %s)", server->fd, strerror(errno));
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
                 return;
@@ -395,6 +393,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                     }
                     if (!not_protect) {
                         if (protect_socket(remote->fd) == -1) {
+                            LOGE("server[%d]: free(protect_socket)", server->fd);
                             ERROR("protect_socket");
                             close_and_free_remote(EV_A_ remote);
                             close_and_free_server(EV_A_ server);
@@ -507,6 +506,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                                 // just turn it off
                                 fast_open = 0;
                             } else {
+                                LOGE("server[%d]: free(fast_open_connect)", server->fd);
                                 ERROR("fast_open_connect");
                             }
                             close_and_free_remote(EV_A_ remote);
@@ -533,7 +533,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                         if (!remote->kcp) IO_START(remote->send_ctx->io, "server[%d]: tcp [+ >>>] | send to remote block", server->fd);
                         return;
                     } else {
-                        LOGE("server[%d]: free(remote connect error %s)", server->fd, strerror(errno));
+                        LOGE("server[%d]: free(remote send error %s)", server->fd, strerror(errno));
                         close_and_free_remote(EV_A_ remote);
                         close_and_free_server(EV_A_ server);
                         return;
@@ -556,6 +556,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             if (buf->len < 1)
                 return;
             if (buf->data[0] != SVERSION) {
+                LOGE("server[%d]: free(version mismatch)", server->fd);
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
                 return;
@@ -580,6 +581,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             char *send_buf = (char *)&response;
             send(server->fd, send_buf, sizeof(response), 0);
             if (response.method == METHOD_UNACCEPTABLE) {
+                LOGE("server[%d]: free(response.method)", server->fd);
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
                 return;
@@ -618,7 +620,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                     LOGI("udp assc request accepted");
                 }
             } else if (request->cmd != 1) {
-                LOGE("unsupported cmd: %d", request->cmd);
+                LOGE("server[%d]: free(unsupported cmd: %d)", server->fd, request->cmd);
                 struct socks5_response response;
                 response.ver  = SVERSION;
                 response.rep  = CMD_NOT_SUPPORTED;
@@ -658,7 +660,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 bfree(resp_buf);
 
                 if (s < reply_size) {
-                    LOGE("failed to send fake reply");
+                    LOGE("server[%d]: free(failed to send fake reply)", server->fd);
                     close_and_free_remote(EV_A_ remote);
                     close_and_free_server(EV_A_ server);
                     return;
@@ -729,7 +731,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                     sprintf(port, "%d", p);
                 }
             } else {
-                LOGE("unsupported addrtype: %d", request->atyp);
+                LOGE("server[%d]: free(unsupported addrtype: %d)", server->fd, request->atyp);
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
                 return;
@@ -874,7 +876,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             if (!remote->direct) {
                 int err = crypto->encrypt(abuf, server->e_ctx, BUF_SIZE);
                 if (err) {
-                    LOGE("invalid password or cipher");
+                    LOGE("server[%d]: free(invalid password or cipher)", server->fd);
                     close_and_free_remote(EV_A_ remote);
                     close_and_free_server(EV_A_ server);
                     return;
@@ -910,7 +912,7 @@ server_send_cb(EV_P_ ev_io *w, int revents)
     remote_t *remote              = server->remote;
     if (server->buf->len == 0) {
         // close and free
-        LOGI("server: close for send with buf 0");
+        LOGI("server[%d]: free(close for send with buf 0)", server->fd);
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
         return;
@@ -920,6 +922,7 @@ server_send_cb(EV_P_ ev_io *w, int revents)
                          server->buf->len, 0);
         if (s == -1) {
             if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                LOGE("server[%d]: free(server: send error %s)", server->fd, strerror(errno));
                 ERROR("server: send error");
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
@@ -975,7 +978,7 @@ remote_timeout_cb(EV_P_ ev_timer *watcher, int revents)
     server_t *server = remote->server;
 
     if (verbose) {
-        LOGI("TCP connection timeout");
+        LOGI("server[%d]: free(TCP connection timeout)", server->fd);
     }
 
     close_and_free_remote(EV_A_ remote);
@@ -1048,7 +1051,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
 
         if (r == 0) {
             // connection closed
-            LOGI("server: close for connection colsed"); 
+            LOGI("server[%d]: free(tcp connection colsed)", server->fd); 
             close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
             return;
@@ -1058,6 +1061,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
                 // continue to wait for recv
                 return;
             } else {
+                LOGE("server[%d]: free(tcp recv error %s)", server->fd, strerror(errno)); 
                 ERROR("server: close for continue recv error");
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
@@ -1093,6 +1097,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
             IO_STOP(remote_recv_ctx->io, "server[%d]: %s [- <<<] | cli send block", server->fd, remote->kcp ? "udp" : "tcp");
             IO_START(server->send_ctx->io, "server[%d]: cli [+ <<<] | cli send block", server->fd);
         } else {
+            LOGE("server[%d]: free(cli send error %s)", server->fd, strerror(errno)); 
             ERROR("remote_recv_cb_send");
             close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
