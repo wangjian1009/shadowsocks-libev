@@ -48,7 +48,17 @@ typedef struct listen_ctx {
     int fd;
     int timeout;
     char *iface;
+
+    /*kcp*/
     uint8_t use_kcp;
+	int kcp_sndwnd;			// sndwnd
+	int kcp_rcvwnd;			// rcvwnd
+	int kcp_nodelay;		// nodelay
+	int kcp_interval;		// interval
+	int kcp_resend;			// resend
+	int kcp_nc; 			// no congestion
+    /**/
+
     struct ev_loop *loop;
 } listen_ctx_t;
 

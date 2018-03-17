@@ -1680,13 +1680,20 @@ new_server(int fd_or_conv, listen_ctx_t *listener, const char * peer_name, struc
     
     /*Loki: init kcmp*/
     if (listener->use_kcp) {
-        server->kcp                 = ikcp_create(fd_or_conv, server);
+        server->kcp = ikcp_create(fd_or_conv, server);
     
         server->kcp->output	= kcp_output;
         server->kcp->writelog = kcp_log;
         server->kcp->logmask = 0xffffffff;
-        /* ikcp_wndsize(server->kcp, param->sndwnd, param->rcvwnd); */
-        /* ikcp_nodelay(server->kcp, param->nodelay, param->interval, param->resend, param->nc); */
+
+        ikcp_wndsize(
+            server->kcp,
+            server->listen_ctx->kcp_sndwnd, server->listen_ctx->kcp_rcvwnd);
+
+        ikcp_nodelay(
+            server->kcp,
+            server->listen_ctx->kcp_nodelay, server->listen_ctx->kcp_interval,
+            server->listen_ctx->kcp_resend, server->listen_ctx->kcp_nc);
 
         server->kcp_watcher.data = server;
         ev_timer_init(&server->kcp_watcher, kcp_update_cb, 0.001, 0.001);
@@ -2075,6 +2082,13 @@ main(int argc, char **argv)
     int mptcp       = 0;
     int mtu         = 0;
     uint8_t use_kcp = 0;
+    int kcp_sndwnd  = 1024;
+	int kcp_rcvwnd  = 1024;
+	int kcp_nodelay = 0;	
+	int kcp_interval= 20;
+	int kcp_resend  = 2;
+	int kcp_nc      = 1;
+
     char *user      = NULL;
     char *password  = NULL;
     char *key       = NULL;
@@ -2101,8 +2115,7 @@ main(int argc, char **argv)
         { "reuse-port",      no_argument,       NULL, GETOPT_VAL_REUSE_PORT  },
         { "no-delay",        no_argument,       NULL, GETOPT_VAL_NODELAY     },
         { "acl",             required_argument, NULL, GETOPT_VAL_ACL         },
-        { "manager-address", required_argument, NULL,
-          GETOPT_VAL_MANAGER_ADDRESS },
+        { "manager-address", required_argument, NULL, GETOPT_VAL_MANAGER_ADDRESS },
         { "mtu",             required_argument, NULL, GETOPT_VAL_MTU         },
         { "help",            no_argument,       NULL, GETOPT_VAL_HELP        },
         { "plugin",          required_argument, NULL, GETOPT_VAL_PLUGIN      },
@@ -2481,7 +2494,10 @@ main(int argc, char **argv)
                     LOGE("listener[%d]: bind to %s:%s fail, %s", listenfd, host, server_port, strerror(errno));
                     FATAL("bind() error");
                 }
-	
+
+                int opt = 1;
+                setsockopt(listenfd, SOL_TCP, TCP_NODELAY, &opt, sizeof(opt));
+
                 setfastopen(listenfd);
             }
             else {
@@ -2503,6 +2519,12 @@ main(int argc, char **argv)
             listen_ctx->iface   = iface;
             listen_ctx->loop    = loop;
             listen_ctx->use_kcp = use_kcp;
+            listen_ctx->kcp_sndwnd = kcp_sndwnd;
+            listen_ctx->kcp_rcvwnd = kcp_rcvwnd;
+            listen_ctx->kcp_nodelay = kcp_nodelay;
+            listen_ctx->kcp_interval = kcp_interval;
+            listen_ctx->kcp_resend = kcp_resend;
+            listen_ctx->kcp_nc = kcp_nc;
 
             ev_io_init(&listen_ctx->io, accept_cb, listenfd, EV_READ);
             IO_START(listen_ctx->io, "listener[%d]: + listen", listen_ctx->fd);
