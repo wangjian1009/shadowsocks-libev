@@ -1690,8 +1690,11 @@ new_server(int fd_or_conv, listen_ctx_t *listener, const char * peer_name, struc
         server->kcp = ikcp_create(fd_or_conv, server);
     
         server->kcp->output	= kcp_output;
-        server->kcp->writelog = kcp_log;
-        server->kcp->logmask = 0xffffffff;
+
+        if (verbose) {
+            server->kcp->writelog = kcp_log;
+            server->kcp->logmask = 0xffffffff;
+        }
 
         ikcp_wndsize(
             server->kcp,
@@ -1852,11 +1855,24 @@ accept_cb(EV_P_ ev_io *w, int revents)
             LOGE("listener[%d]: udp >>> error | %s", listener->fd, strerror(errno));
             return;
         }	
+
+        if (len < 24/*IKCP_OVERHEAD*/) {
+            LOGE("listener[%d]: udp >>> len %d too small, at least 24", listener->fd, len);
+            return;
+        }
         
         int conv = ikcp_getconv(buf);
 
         server_t * server = kcp_find_server(conv, &clientaddr);
         if (server == NULL) {
+            char kcp_cmd = buf[4];
+            if (kcp_cmd != 81/*IKCP_CMD_PUSH*/) {
+                if (verbose) {
+                    LOGI("listener[%d]: udp >>> ignore cmd %d, only push start server", listener->fd, kcp_cmd);
+                }
+                return;
+            }
+
             char peer_name[INET6_ADDRSTRLEN + 20];
             snprintf(peer_name, sizeof(peer_name), "%s[%d]", get_name_from_addr(&clientaddr, clientlen, 1), conv);
             
