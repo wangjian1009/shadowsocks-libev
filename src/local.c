@@ -81,7 +81,7 @@
 #endif
 
 #ifndef BUF_SIZE
-#define BUF_SIZE 2048
+#define BUF_SIZE 4096
 #endif
 
 int verbose        = 0;
@@ -1041,7 +1041,6 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
             return;
         }
 
-        LOGI("xxxxx: buf len = %d", (int)server->buf->len);
         assert(server->buf->len == 0);
         while(server->buf->len == 0) {
             if (kcp_recv_data(server, remote) != 0) {
@@ -1536,6 +1535,8 @@ static void send_to_client(EV_P_ server_t * server, remote_t * remote) {
         if (verbose) {
             LOGI("server[%d]: cli <<< %d", server->fd, s);
         }
+
+        IO_START(server->recv_ctx->io, "server[%d]: cli [+ >>>] | cli send complete", server->fd);
     }
 
     // Disable TCP_NODELAY after the first response are sent
@@ -1606,7 +1607,6 @@ static int kcp_recv_data(server_t * server, remote_t * remote) {
             }
             return -1;
         }
-        LOGE("server[%d]: kcp     <<< return %d", server->fd, r);
         return 0;
     }
 
