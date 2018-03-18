@@ -139,7 +139,9 @@ static server_t *new_server(int fd);
 
 /*Loki: */
 static ssize_t send_to_remote(EV_P_ remote_t *remote, const void *buffer, size_t length);
+static void send_to_client(EV_P_ server_t * server, remote_t * remote);
 static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user);
+static int kcp_recv_data(server_t * server, remote_t * remote);
 static void kcp_log(const char *log, ikcpcb *kcp, void *user);
 static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents);
 static void kcp_timer_reset(EV_P_ remote_t *remote);
@@ -918,8 +920,7 @@ server_send_cb(EV_P_ ev_io *w, int revents)
         return;
     } else {
         // has data to send
-        ssize_t s = send(server->fd, server->buf->data + server->buf->idx,
-                         server->buf->len, 0);
+        ssize_t s = send(server->fd, server->buf->data + server->buf->idx, server->buf->len, 0);
         if (s == -1) {
             if (errno != EAGAIN && errno != EWOULDBLOCK) {
                 LOGE("server[%d]: free(server: send error %s)", server->fd, strerror(errno));
@@ -943,11 +944,26 @@ server_send_cb(EV_P_ ev_io *w, int revents)
             // all sent out, wait for reading
             server->buf->len = 0;
             server->buf->idx = 0;
-            IO_STOP(server_send_ctx->io, "server[%d]: cli [- <<<] | cli response no data", server->fd);
-            IO_START(remote->recv_ctx->io, "server[%d]: %s [+ <<<] | cli response no data", server->fd, remote->kcp ? "udp" : "tcp");
 
             if (verbose) {
                 LOGI("server[%d]: cli <<< %d", server->fd, (int)s);
+            }
+
+            if (remote && remote->kcp) {
+                if (kcp_recv_data(server, remote) != 0) {
+                    close_and_free_remote(EV_A_ remote);
+                    close_and_free_server(EV_A_ server);
+                    return;
+                }
+
+                if (server->buf->len > 0) {
+                    send_to_client(EV_A_ server, remote);
+                }
+            }
+
+            if (server->buf->len == 0) {
+                IO_STOP(server_send_ctx->io, "server[%d]: cli [- <<<] | cli response no data", server->fd);
+                IO_START(remote->recv_ctx->io, "server[%d]: %s [+ <<<] | cli response no data", server->fd, remote->kcp ? "udp" : "tcp");
             }
             
             return;
@@ -1006,42 +1022,37 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
             return;
         }
         
-        if (nrecv > 0) {
-            int conv = ikcp_getconv(buf);
+        if (nrecv == 0) return;
+        
+        int conv = ikcp_getconv(buf);
 
-            assert(conv == remote->kcp->conv);
+        assert(conv == remote->kcp->conv);
+        if (verbose) {
+            LOGI("server[%d]: udp         <<< %d", server->fd, nrecv);
+        }
+
+        int nret = ikcp_input(remote->kcp, buf, nrecv);
+        if (nret < 0) {
             if (verbose) {
-                LOGI("server[%d]: udp         <<< %d", server->fd, nrecv);
+                LOGE("server[%d]: kcp input %d data fail, rv=%d", server->fd, nrecv, nret);
             }
+            close_and_free_remote(EV_A_ remote);
+            close_and_free_server(EV_A_ server);
+            return;
+        }
 
-            int nret = ikcp_input(remote->kcp, buf, nrecv);
-            if (nret < 0) {
-                if (verbose) {
-                    LOGE("server[%d]: kcp input %d data fail, rv=%d", server->fd, nrecv, nret);
-                }
+        LOGI("xxxxx: buf len = %d", (int)server->buf->len);
+        assert(server->buf->len == 0);
+        while(server->buf->len == 0) {
+            if (kcp_recv_data(server, remote) != 0) {
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
                 return;
             }
 
-            assert(server->buf->len == 0);
-            int r = ikcp_recv(remote->kcp, server->buf->data, BUF_SIZE);
-            if (r < 0) {
-                if (r == -3) {
-                    if (verbose) {
-                        LOGE("server[%d]: kcp     <<< error, obuf small", server->fd);
-                    }
-                    close_and_free_remote(EV_A_ remote);
-                    close_and_free_server(EV_A_ server);
-                }
-                return;
-            }
+            if (server->buf->len == 0) return;
 
-            if (verbose) {
-                LOGI("server[%d]: kcp     <<< %d", server->fd, r);
-            }
-
-            server->buf->len = r;
+            send_to_client(EV_A_ server, remote);
         }
     }
     else {
@@ -1070,66 +1081,8 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         }
 
         server->buf->len = r;
+        send_to_client(EV_A_ server, remote);
     }
-
-    if (!remote->direct) {
-#ifdef __ANDROID__
-        rx += server->buf->len;
-        stat_update_cb();
-#endif
-        int err = crypto->decrypt(server->buf, server->d_ctx, BUF_SIZE);
-        if (err == CRYPTO_ERROR) {
-            LOGE("invalid password or cipher");
-            close_and_free_remote(EV_A_ remote);
-            close_and_free_server(EV_A_ server);
-            return;
-        } else if (err == CRYPTO_NEED_MORE) {
-            return; // Wait for more
-        }
-    }
-
-    int s = send(server->fd, server->buf->data, server->buf->len, 0);
-
-    if (s == -1) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            // no data, wait for send
-            server->buf->idx = 0;
-            IO_STOP(remote_recv_ctx->io, "server[%d]: %s [- <<<] | cli send block", server->fd, remote->kcp ? "udp" : "tcp");
-            IO_START(server->send_ctx->io, "server[%d]: cli [+ <<<] | cli send block", server->fd);
-        } else {
-            LOGE("server[%d]: free(cli send error %s)", server->fd, strerror(errno)); 
-            ERROR("remote_recv_cb_send");
-            close_and_free_remote(EV_A_ remote);
-            close_and_free_server(EV_A_ server);
-            return;
-        }
-    } else if (s < (int)(server->buf->len)) {
-        server->buf->len -= s;
-        server->buf->idx  = s;
-
-        if (verbose) {
-            LOGI("server[%d]: cli <<< %d | %d", server->fd, s, (int)server->buf->len);
-        }
-
-        IO_STOP(remote_recv_ctx->io, "server[%d]: %s [- <<<] | cli send in process", server->fd, remote->kcp ? "udp" : "tcp");
-        IO_START(server->send_ctx->io, "server[%d]: cli [+ <<<] | cli send in process", server->fd);
-    }
-    else {
-        server->buf->len = 0;
-
-        if (verbose) {
-            LOGI("server[%d]: cli <<< %d", server->fd, s);
-        }
-    }
-
-    // Disable TCP_NODELAY after the first response are sent
-    if (!remote->kcp && !remote->recv_ctx->connected && !no_delay) {
-        int opt = 0;
-        setsockopt(server->fd, SOL_TCP, TCP_NODELAY, &opt, sizeof(opt));
-        setsockopt(remote->fd, SOL_TCP, TCP_NODELAY, &opt, sizeof(opt));
-    }
-    remote->recv_ctx->connected = 1;
-    
 }
 
 static void
@@ -1534,6 +1487,66 @@ accept_cb(EV_P_ ev_io *w, int revents)
     IO_START(server->recv_ctx->io, "server[%d]: listen +", server->fd);
 }
 
+static void send_to_client(EV_P_ server_t * server, remote_t * remote) {
+        if (!remote->direct) {
+#ifdef __ANDROID__
+        rx += server->buf->len;
+        stat_update_cb();
+#endif
+        int err = crypto->decrypt(server->buf, server->d_ctx, BUF_SIZE);
+        if (err == CRYPTO_ERROR) {
+            LOGE("invalid password or cipher");
+            close_and_free_remote(EV_A_ remote);
+            close_and_free_server(EV_A_ server);
+            return;
+        } else if (err == CRYPTO_NEED_MORE) {
+            return; // Wait for more
+        }
+    }
+
+    int s = send(server->fd, server->buf->data, server->buf->len, 0);
+
+    if (s == -1) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            // no data, wait for send
+            server->buf->idx = 0;
+            IO_STOP(remote->recv_ctx->io, "server[%d]: %s [- <<<] | cli send block", server->fd, remote->kcp ? "udp" : "tcp");
+            IO_START(server->send_ctx->io, "server[%d]: cli [+ <<<] | cli send block", server->fd);
+        } else {
+            LOGE("server[%d]: free(cli send error %s)", server->fd, strerror(errno)); 
+            ERROR("remote_recv_cb_send");
+            close_and_free_remote(EV_A_ remote);
+            close_and_free_server(EV_A_ server);
+            return;
+        }
+    } else if (s < (int)(server->buf->len)) {
+        server->buf->len -= s;
+        server->buf->idx  = s;
+
+        if (verbose) {
+            LOGI("server[%d]: cli <<< %d | %d", server->fd, s, (int)server->buf->len);
+        }
+
+        IO_STOP(remote->recv_ctx->io, "server[%d]: %s [- <<<] | cli send in process", server->fd, remote->kcp ? "udp" : "tcp");
+        IO_START(server->send_ctx->io, "server[%d]: cli [+ <<<] | cli send in process", server->fd);
+    }
+    else {
+        server->buf->len = 0;
+
+        if (verbose) {
+            LOGI("server[%d]: cli <<< %d", server->fd, s);
+        }
+    }
+
+    // Disable TCP_NODELAY after the first response are sent
+    if (!remote->kcp && !remote->recv_ctx->connected && !no_delay) {
+        int opt = 0;
+        setsockopt(server->fd, SOL_TCP, TCP_NODELAY, &opt, sizeof(opt));
+        setsockopt(remote->fd, SOL_TCP, TCP_NODELAY, &opt, sizeof(opt));
+    }
+    remote->recv_ctx->connected = 1;
+}
+
 /*Loki: kcp */
 static ssize_t send_to_remote(EV_P_ remote_t *remote, const void *buffer, size_t length) {
     server_t *server = remote->server;
@@ -1581,6 +1594,28 @@ static void kcp_log(const char *log, ikcpcb *kcp, void *user) {
     remote_t * remote = user;
     server_t * server = remote->server;
     LOGI("server[%d]: kcp                                                | %s", server->fd, log);
+}
+
+static int kcp_recv_data(server_t * server, remote_t * remote) {
+    assert(server->buf->len == 0);
+    int r = ikcp_recv(remote->kcp, server->buf->data, BUF_SIZE);
+    if (r < 0) {
+        if (r == -3) {
+            if (verbose) {
+                LOGE("server[%d]: kcp     <<< error, obuf small", server->fd);
+            }
+            return -1;
+        }
+        LOGE("server[%d]: kcp     <<< return %d", server->fd, r);
+        return 0;
+    }
+
+    if (verbose) {
+        LOGI("server[%d]: kcp     <<< %d", server->fd, r);
+    }
+
+    server->buf->len = r;
+    return 0;
 }
 
 static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents) {
