@@ -38,6 +38,7 @@
 #include "crypto.h"
 #include "jconf.h"
 #include "protocol.h"
+#include "ikcp.h"
 
 #include "common.h"
 
@@ -48,12 +49,22 @@ typedef struct listen_ctx {
     int timeout;
     int fd;
     int mptcp;
+
+    /*kcp*/
+    uint8_t use_kcp;
+	int kcp_sndwnd;			// sndwnd
+	int kcp_rcvwnd;			// rcvwnd
+	int kcp_nodelay;		// nodelay
+	int kcp_interval;		// interval
+	int kcp_resend;			// resend
+	int kcp_nc; 			// no congestion
+    /**/
+    
     struct sockaddr **remote_addr;
 } listen_ctx_t;
 
 typedef struct server_ctx {
     ev_io io;
-    int connected;
     struct server *server;
 } server_ctx_t;
 
@@ -95,6 +106,8 @@ typedef struct remote {
 #endif
 
     buffer_t *buf;
+    ikcpcb *kcp;
+    ev_timer kcp_watcher;
 
     struct remote_ctx *recv_ctx;
     struct remote_ctx *send_ctx;

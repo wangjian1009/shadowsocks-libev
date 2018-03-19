@@ -86,6 +86,15 @@ typedef struct {
     int mptcp;
     int ipv6_first;
     int no_delay;
+
+    /*kcp*/
+	int kcp_sndwnd;			// sndwnd
+	int kcp_rcvwnd;			// rcvwnd
+	int kcp_nodelay;		// nodelay
+	int kcp_interval;		// interval
+	int kcp_resend;			// resend
+	int kcp_nc; 			// no congestion
+    /**/
 } jconf_t;
 
 jconf_t *read_jconf(const char *file);

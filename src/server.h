@@ -39,6 +39,7 @@
 #include "crypto.h"
 #include "jconf.h"
 #include "resolv.h"
+#include "ikcp.h"
 
 #include "common.h"
 
@@ -47,13 +48,23 @@ typedef struct listen_ctx {
     int fd;
     int timeout;
     char *iface;
+
+    /*kcp*/
+    uint8_t use_kcp;
+	int kcp_sndwnd;			// sndwnd
+	int kcp_rcvwnd;			// rcvwnd
+	int kcp_nodelay;		// nodelay
+	int kcp_interval;		// interval
+	int kcp_resend;			// resend
+	int kcp_nc; 			// no congestion
+    /**/
+
     struct ev_loop *loop;
 } listen_ctx_t;
 
 typedef struct server_ctx {
     ev_io io;
     ev_timer watcher;
-    int connected;
     struct server *server;
 } server_ctx_t;
 
@@ -74,12 +85,19 @@ struct dscptracker {
 struct query;
 
 typedef struct server {
-    int fd;
+    int fd_or_conv;
     int stage;
     int frag;
+    char peer_name[INET6_ADDRSTRLEN + 32];
+
+    ikcpcb *kcp;
+    ev_timer kcp_watcher;
 
     buffer_t *buf;
 
+    int addr_len;
+    struct sockaddr_storage addr;
+    
     cipher_ctx_t *e_ctx;
     cipher_ctx_t *d_ctx;
     struct server_ctx *recv_ctx;

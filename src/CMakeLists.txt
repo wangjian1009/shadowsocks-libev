@@ -86,6 +86,11 @@ set(SS_REDIR_SOURCE
         ${SS_PLUGIN_SOURCE}
         )
 
+# Loki: add sodium.h path
+FIND_PATH(SODIUM_HEADER sodium.h)
+IF(SODIUM_HEADER)
+INCLUDE_DIRECTORIES(${SODIUM_HEADER})
+ENDIF(SODIUM_HEADER)
 
 if (WITH_STATIC)
 find_library(LIBSODIUM libsodium.a)
@@ -121,6 +126,7 @@ list(APPEND DEPS_SHARED
         bloom-shared
         cork-shared
         ipset-shared
+        kcp-shared
         ${LIBEV_SHARED}
         ${LIBUDNS_SHARED}
         ${LIBPCRE_SHARED}
@@ -171,10 +177,10 @@ target_compile_definitions(ss-local PUBLIC -DMODULE_LOCAL)
 target_compile_definitions(ss-redir PUBLIC -DMODULE_REDIR)
 target_compile_definitions(shadowsocks-libev PUBLIC -DMODULE_LOCAL)
 
-target_link_libraries(ss-server cork ipset ${DEPS})
+target_link_libraries(ss-server cork ipset kcp ${DEPS})
 target_link_libraries(ss-tunnel cork ${DEPS})
 target_link_libraries(ss-manager m bloom cork ${LIBEV} ${LIBUDNS})
-target_link_libraries(ss-local cork ipset ${DEPS})
+target_link_libraries(ss-local cork ipset kcp ${DEPS})
 target_link_libraries(ss-redir cork ipset ${DEPS})
 target_link_libraries(shadowsocks-libev cork ipset ${DEPS})
 endif ()

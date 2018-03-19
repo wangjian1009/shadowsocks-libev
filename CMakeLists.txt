@@ -52,6 +52,16 @@ install(FILES
         DESTINATION pkgconfig
         )
 
+# Loki: add kcp compile
+include_directories(kcp)
+set(KCP_SOURCE
+        kcp/ikcp.c)
+add_library(kcp STATIC ${KCP_SOURCE})
+
+add_library(kcp-shared SHARED ${KCP_SOURCE})
+set_target_properties(kcp-shared PROPERTIES OUTPUT_NAME kcp)
+
+
 if (WITH_EMBEDDED_SRC)
 # We need libcork,libipset headers
 include_directories(libcork/include)

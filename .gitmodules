@@ -10,3 +10,6 @@
 	path = libbloom
 	url = https://github.com/shadowsocks/libbloom.git
     ignore = dirty
+[submodule "kcp"]
+	path = kcp
+	url = git@github.com:skywind3000/kcp.git
