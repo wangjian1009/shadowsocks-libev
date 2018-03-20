@@ -13,3 +13,6 @@
 [submodule "kcp"]
 	path = kcp
 	url = git@github.com:skywind3000/kcp.git
+[submodule "libebb"]
+	path = libebb
+	url = git@github.com:wangjian1009/libebb.git

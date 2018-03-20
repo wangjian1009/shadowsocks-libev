@@ -61,6 +61,22 @@ add_library(kcp STATIC ${KCP_SOURCE})
 add_library(kcp-shared SHARED ${KCP_SOURCE})
 set_target_properties(kcp-shared PROPERTIES OUTPUT_NAME kcp)
 
+# Loki: add libebb compile
+FIND_PATH(LIBEV_HEADER ev.h)
+find_library(LIBEV ev)
+IF(LIBEV_HEADER)
+INCLUDE_DIRECTORIES(${LIBEV_HEADER})
+ENDIF(LIBEV_HEADER)
+
+include_directories(libebb)
+set(LIBEBB_SOURCE
+        libebb/ebb.c
+        libebb/ebb_request_parser.c)
+add_library(ebb STATIC ${LIBEBB_SOURCE})
+
+add_library(ebb-shared SHARED ${LIBEBB_SOURCE})
+set_target_properties(ebb-shared PROPERTIES OUTPUT_NAME ebb)
+target_link_libraries(ebb-shared ${LIBEV})
 
 if (WITH_EMBEDDED_SRC)
 # We need libcork,libipset headers

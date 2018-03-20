@@ -39,6 +39,7 @@
 #include "jconf.h"
 #include "protocol.h"
 #include "ikcp.h"
+#include "ebb.h"
 
 #include "common.h"
 
@@ -49,6 +50,10 @@ typedef struct listen_ctx {
     int timeout;
     int fd;
     int mptcp;
+
+    ebb_server * ebb_svr;
+    ebb_connection * ebb_conn;
+    ebb_request * ebb_request;
 
     /*kcp*/
     uint8_t use_kcp;

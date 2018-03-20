@@ -127,6 +127,7 @@ list(APPEND DEPS_SHARED
         cork-shared
         ipset-shared
         kcp-shared
+        ebb-shared
         ${LIBEV_SHARED}
         ${LIBUDNS_SHARED}
         ${LIBPCRE_SHARED}
@@ -180,7 +181,7 @@ target_compile_definitions(shadowsocks-libev PUBLIC -DMODULE_LOCAL)
 target_link_libraries(ss-server cork ipset kcp ${DEPS})
 target_link_libraries(ss-tunnel cork ${DEPS})
 target_link_libraries(ss-manager m bloom cork ${LIBEV} ${LIBUDNS})
-target_link_libraries(ss-local cork ipset kcp ${DEPS})
+target_link_libraries(ss-local cork ipset kcp ebb ${DEPS})
 target_link_libraries(ss-redir cork ipset ${DEPS})
 target_link_libraries(shadowsocks-libev cork ipset ${DEPS})
 endif ()

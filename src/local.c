@@ -146,6 +146,9 @@ static void kcp_log(const char *log, ikcpcb *kcp, void *user);
 static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents);
 static void kcp_timer_reset(EV_P_ remote_t *remote);
 
+static ebb_connection * control_new_connection(ebb_server *server, struct sockaddr_in *addr);
+static ebb_request* control_conn_new_request(ebb_connection * ebb_conn);
+static void control_conn_on_close(ebb_connection * ebb_conn);
 
 #define IO_START(__h, __msg, args...)           \
     do {                                        \
@@ -1658,6 +1661,78 @@ static void kcp_timer_reset(EV_P_ remote_t *remote) {
     TIMER_START(remote->kcp_watcher, "server[%d]: kcp [+ update] delay %.5f", server->fd, delay);
 }
 
+static ebb_connection * control_new_connection(ebb_server *server, struct sockaddr_in *addr) {
+    struct listen_ctx * listen_ctx = server->data;
+    ebb_connection * ebb_conn;
+
+    ebb_conn = ss_malloc(sizeof(ebb_connection));
+    ebb_connection_init(ebb_conn);
+    ebb_conn->data = listen_ctx;
+    ebb_conn->new_request = control_conn_new_request;
+    ebb_conn->on_close = control_conn_on_close;
+    
+    if (listen_ctx->ebb_conn) {
+        ebb_connection_schedule_close(listen_ctx->ebb_conn);
+        listen_ctx->ebb_conn = NULL;
+    }
+
+    listen_ctx->ebb_conn = ebb_conn;
+
+    if (verbose) {
+        LOGI("control: conn created");
+    }
+    
+    return ebb_conn;
+}
+
+static ebb_request* control_conn_new_request(ebb_connection * ebb_conn) {
+    struct listen_ctx * listen_ctx = ebb_conn->data;
+
+    if (listen_ctx->ebb_conn != ebb_conn) {
+        LOGE("control: conn %d: ignore new request, conn is not active!", ebb_conn->fd);
+        return NULL;
+    }
+
+    listen_ctx->ebb_request = ss_malloc(sizeof(ebb_request));
+    return listen_ctx->ebb_request;
+}
+
+static void control_conn_on_close(ebb_connection * ebb_conn) {
+    struct listen_ctx * listen_ctx = ebb_conn->data;
+
+    if (listen_ctx->ebb_conn == ebb_conn) {
+        listen_ctx->ebb_conn = NULL;
+        if (verbose) {
+            LOGI("control: conn %d (active) closed!", ebb_conn->fd);
+        }
+    }
+    else {
+        if (verbose) {
+            LOGI("control: conn %d (not active) closed!", ebb_conn->fd);
+        }
+    }
+
+    ss_free(ebb_conn);
+}
+
+static void control_request_on_complete(ebb_request * ebb_req) {
+    struct listen_ctx * listen_ctx = ebb_req->data;
+
+    if (listen_ctx->ebb_request != ebb_req) {
+        LOGE("control: request ignore for not active!");
+        ss_free(ebb_req);
+        return;
+    }
+    else {
+        if (verbose) {
+            LOGI("control: receive one request!");
+        }
+        listen_ctx->ebb_request = NULL;
+    }
+
+    //TODO: process
+}
+
 /**/
 
 #ifndef LIB_ONLY
@@ -1675,6 +1750,8 @@ main(int argc, char **argv)
 	int kcp_interval= 20;
 	int kcp_resend  = 2;
 	int kcp_nc      = 1;
+
+    char *control_port = NULL;
     
     char *user       = NULL;
     char *local_port = NULL;
@@ -1714,6 +1791,7 @@ main(int argc, char **argv)
         { "key",         required_argument, NULL, GETOPT_VAL_KEY         },
         { "help",        no_argument,       NULL, GETOPT_VAL_HELP        },
         { "kcp",         no_argument,       NULL, GETOPT_VAL_KCP         },
+        { "control-port",optional_argument, NULL, GETOPT_VAL_CONTROL_PORT},
         { NULL,                          0, NULL,                      0 }
     };
 
@@ -1751,6 +1829,10 @@ main(int argc, char **argv)
         case GETOPT_VAL_KCP:
             use_kcp = 1;
             LOGI("enable KCP");
+            break;
+        case GETOPT_VAL_CONTROL_PORT:
+            control_port = optarg;
+            LOGI("enable control at %s", control_port);
             break;
         case GETOPT_VAL_PLUGIN:
             plugin = optarg;
@@ -2058,6 +2140,9 @@ main(int argc, char **argv)
     listen_ctx.kcp_interval = kcp_interval;
     listen_ctx.kcp_resend = kcp_resend;
     listen_ctx.kcp_nc = kcp_nc;
+    listen_ctx.ebb_svr = NULL;
+    listen_ctx.ebb_conn = NULL;
+    listen_ctx.ebb_request = NULL;
 
     // Setup signal handler
     ev_signal_init(&sigint_watcher, signal_cb, SIGINT);
@@ -2076,6 +2161,20 @@ main(int argc, char **argv)
 
     struct ev_loop *loop = EV_DEFAULT;
 
+    ebb_server ebb_svr;
+    if (control_port) {
+        ebb_server_init(&ebb_svr, loop);
+        ebb_svr.new_connection = control_new_connection;
+        ebb_svr.data = &listen_ctx;
+
+        if (ebb_server_listen_on_port(&ebb_svr, atoi(control_port)) < 0) {
+            LOGE("control-server: listen on port %s fail, %s!", control_port, strerror(errno));
+        }
+        else {
+            listen_ctx.ebb_svr = &ebb_svr;
+        }
+    }
+    
     if (mode != UDP_ONLY) {
         // Setup socket
         int listenfd;
@@ -2158,6 +2257,11 @@ main(int argc, char **argv)
 
     if (mode != TCP_ONLY) {
         free_udprelay();
+    }
+
+    if (listen_ctx.ebb_svr) {
+        ebb_server_unlisten(listen_ctx.ebb_svr);
+        LOGI("control server shutdown");
     }
 
 #ifdef __MINGW32__
