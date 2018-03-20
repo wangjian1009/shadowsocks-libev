@@ -57,6 +57,9 @@ typedef struct listen_ctx {
 
     /*kcp*/
     uint8_t use_kcp;
+    int kcp_fd;
+    ev_io kcp_recv_io;
+    ev_timer kcp_update;
 	int kcp_sndwnd;			// sndwnd
 	int kcp_rcvwnd;			// rcvwnd
 	int kcp_nodelay;		// nodelay
@@ -112,12 +115,12 @@ typedef struct remote {
 
     buffer_t *buf;
     ikcpcb *kcp;
-    ev_timer kcp_watcher;
 
     struct remote_ctx *recv_ctx;
     struct remote_ctx *send_ctx;
     struct server *server;
     struct sockaddr_storage addr;
+    char peer_name[INET6_ADDRSTRLEN + 32];
 } remote_t;
 
 #endif // _LOCAL_H
