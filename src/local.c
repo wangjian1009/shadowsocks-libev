@@ -2203,6 +2203,16 @@ main(int argc, char **argv)
             exit(EXIT_FAILURE);
         }
 
+#ifdef __ANDROID__
+        if (vpn) {
+            if (protect_socket(listen_ctx.kcp_fd) == -1) {
+                LOGE("listening protect_socket fail");
+                ERROR("listening protect_socket fail");
+                exit(EXIT_FAILURE);
+            }
+        }
+#endif
+        
         if (kcp_local_addr) {
             char * sep = strchr(kcp_local_addr, ':');
             if (sep == NULL) {
