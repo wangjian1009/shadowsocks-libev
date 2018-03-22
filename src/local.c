@@ -426,6 +426,9 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                             not_protect = 1;
                     }
                     if (!not_protect) {
+                        if (verbose) {
+                            LOGI("server[%d]: tcp: protect socket", server->fd);
+                        }
                         if (protect_socket(remote->fd) == -1) {
                             LOGE("server[%d]: free(protect_socket)", server->fd);
                             ERROR("protect_socket");
@@ -896,16 +899,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
             // Not bypass
             if (remote == NULL) {
-                int direct = 0;
-#if defined __ANDROID__
-                if (strcmp(port, "53") == 0) {
-                    if (verbose) {
-                        LOGI("server[%d]: direct connect for dns request", server->fd);
-                    }
-                    direct = 1;
-                }
-#endif
-                remote = create_remote(server->listener, NULL, direct);
+                remote = create_remote(server->listener, NULL, 0);
             }
 
             if (remote == NULL) {
@@ -1085,6 +1079,8 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
     assert(remote->kcp == NULL);
     /**/
 
+    LOGI("server[%d]: remote_send_cb: revents=%x", server->fd, revents);
+
     if (!remote->send_ctx->connected) {
 #ifdef TCP_FASTOPEN_WINSOCK
         if (fast_open) {
@@ -1118,7 +1114,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
         }
 #endif
         struct sockaddr_storage addr;
-        socklen_t len = sizeof addr;
+        socklen_t len = sizeof(addr);
         int r         = getpeername(remote->fd, (struct sockaddr *)&addr, &len);
         if (r == 0) {
             remote->send_ctx->connected = 1;
@@ -1135,7 +1131,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
             }
         } else {
             // not connected
-            ERROR("getpeername");
+            LOGE("server[%d]: free(tcp getpeername error %s)", server->fd, strerror(errno));
             close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
             return;
@@ -1144,7 +1140,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
 
     if (remote->buf->len == 0) {
         // close and free
-        LOGI("server: close for no send data");
+        LOGI("server[%d]: free(no send data)", server->fd);
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
         return;
@@ -1476,7 +1472,7 @@ accept_cb(EV_P_ ev_io *w, int revents)
     server_t *server = new_server(serverfd);
     server->listener = listener;
 
-    IO_START(server->recv_ctx->io, "server[%d]: listen +", server->fd);
+    IO_START(server->recv_ctx->io, "server[%d]: cli [+ >>>]", server->fd);
 }
 
 static void send_to_client(EV_P_ server_t * server, remote_t * remote) {
@@ -2212,16 +2208,6 @@ main(int argc, char **argv)
             exit(EXIT_FAILURE);
         }
 
-#ifdef __ANDROID__
-        if (vpn) {
-            if (protect_socket(listen_ctx.kcp_fd) == -1) {
-                LOGE("listening protect_socket fail");
-                ERROR("listening protect_socket fail");
-                exit(EXIT_FAILURE);
-            }
-        }
-#endif
-        
         if (kcp_local_addr) {
             char * sep = strchr(kcp_local_addr, ':');
             if (sep == NULL) {
@@ -2246,6 +2232,19 @@ main(int argc, char **argv)
                 LOGI("kcp port bind to %s", kcp_local_addr);
             }
         }
+        
+#ifdef __ANDROID__
+        if (vpn) {
+            if (verbose) {
+                LOGI("kcp protect socket", listen_ctx.kcp_fd);
+            }
+            if (protect_socket(listen_ctx.kcp_fd) == -1) {
+                LOGE("listening protect_socket fail");
+                ERROR("listening protect_socket fail");
+                exit(EXIT_FAILURE);
+            }
+        }
+#endif
         
         listen_ctx.kcp_recv_io.data = &listen_ctx;
         ev_io_init(&listen_ctx.kcp_recv_io, kcp_recv_cb, listen_ctx.kcp_fd, EV_READ);
