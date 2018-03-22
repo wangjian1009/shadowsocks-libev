@@ -128,7 +128,7 @@ static int create_and_bind(const char *addr, const char *port);
 #ifdef HAVE_LAUNCHD
 static int launch_or_create(const char *addr, const char *port);
 #endif
-static remote_t *create_remote(listen_ctx_t *listener, struct sockaddr *addr);
+static remote_t *create_remote(listen_ctx_t *listener, struct sockaddr *addr, int direct);
 static void free_remote(remote_t *remote);
 static void close_and_free_remote(EV_P_ remote_t *remote);
 static void free_server(server_t *server);
@@ -889,16 +889,23 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 #endif
                     err = get_sockaddr(ip, port, &storage, 0, ipv6first);
                     if (err != -1) {
-                        remote = create_remote(server->listener, (struct sockaddr *)&storage);
-                        if (remote != NULL)
-                            remote->direct = 1;
+                        remote = create_remote(server->listener, (struct sockaddr *)&storage, 1);
                     }
                 }
             }
 
             // Not bypass
             if (remote == NULL) {
-                remote = create_remote(server->listener, NULL);
+                int direct = 0;
+#if defined __ANDROID__
+                if (strcmp(port, "53") == 0) {
+                    if (verbose) {
+                        LIGI("server[%d]: direct connect for dns request", server->fd);
+                    }
+                    direct = 1;
+                }
+#endif
+                remote = create_remote(server->listener, NULL, direct);
             }
 
             if (remote == NULL) {
@@ -1346,7 +1353,7 @@ close_and_free_server(EV_P_ server_t *server)
 }
 
 static remote_t *
-create_remote(listen_ctx_t *listener, struct sockaddr *addr)
+create_remote(listen_ctx_t *listener, struct sockaddr *addr, int direct)
 {
     struct sockaddr *remote_addr;
 
@@ -1357,8 +1364,10 @@ create_remote(listen_ctx_t *listener, struct sockaddr *addr)
         remote_addr = addr;
     }
 
+    uint8_t use_kcp = !direct && listener->use_kcp;
+
     int remotefd;
-    if (listener->use_kcp) {
+    if (use_kcp) {
         remotefd = -1;
     }
     else {
@@ -1403,7 +1412,7 @@ create_remote(listen_ctx_t *listener, struct sockaddr *addr)
     }
 #endif
 
-    remote_t *remote = new_remote(listener, remotefd, listener->timeout, listener->use_kcp);
+    remote_t *remote = new_remote(listener, remotefd, listener->timeout, use_kcp);
     remote->addr_len = get_sockaddr_len(remote_addr);
     memcpy(&(remote->addr), remote_addr, remote->addr_len);
 
