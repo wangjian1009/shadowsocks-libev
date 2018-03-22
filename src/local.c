@@ -900,7 +900,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 #if defined __ANDROID__
                 if (strcmp(port, "53") == 0) {
                     if (verbose) {
-                        LIGI("server[%d]: direct connect for dns request", server->fd);
+                        LOGI("server[%d]: direct connect for dns request", server->fd);
                     }
                     direct = 1;
                 }
@@ -1419,7 +1419,7 @@ create_remote(listen_ctx_t *listener, struct sockaddr *addr, int direct)
     if (remote->kcp) {
         snprintf(
             remote->peer_name, sizeof(remote->peer_name) - 1,
-            "%s.%d", get_name_from_addr(remote_addr, remote->addr_len, 1), remote->kcp->conv);
+            "%s.%d", get_name_from_addr(remote_addr, remote->addr_len, 1), (int)remote->kcp->conv);
     }
     else {
         snprintf(
