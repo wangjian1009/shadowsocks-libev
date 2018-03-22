@@ -2321,7 +2321,7 @@ main(int argc, char **argv)
 #ifdef __ANDROID__
         if (vpn) {
             if (verbose) {
-                LOGI("kcp protect socket", listen_ctx.kcp_fd);
+                LOGI("kcp protect socket");
             }
             if (protect_socket(listen_ctx.kcp_fd) == -1) {
                 LOGE("listening protect_socket fail");

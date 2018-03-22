@@ -1908,7 +1908,7 @@ accept_cb(EV_P_ ev_io *w, int revents)
             }
 
             char peer_name[INET6_ADDRSTRLEN + 20];
-            snprintf(peer_name, sizeof(peer_name), "%s[%d]", get_name_from_addr(&clientaddr, clientlen, 1), conv);
+            snprintf(peer_name, sizeof(peer_name), "%s[%d]", get_name_from_addr(&clientaddr, clientlen, 1), (int)conv);
             
             server = new_server(conv, listener, peer_name, &clientaddr, clientlen);
 
