@@ -138,14 +138,23 @@ static remote_t *new_remote(listen_ctx_t *listener, int fd, int timeout, uint8_t
 static server_t *new_server(int fd);
 
 /*Loki: */
+extern IUINT32 IKCP_CMD_PUSH /* = 81*/;
+extern IUINT32 IKCP_CMD_ACK  /*= 82*/;
+extern IUINT32 IKCP_CMD_WASK /*= 83*/;
+extern IUINT32 IKCP_CMD_WINS /*= 84*/;
+const IUINT32 IKCP_CMD_EXT_REMOVE = 89;
+
 static ssize_t send_to_remote(EV_P_ remote_t *remote, const void *buffer, size_t length);
 static void send_to_client(EV_P_ server_t * server, remote_t * remote);
 static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user);
+static int kcp_send_cmd(
+    listen_ctx_t * listener, server_t * server,
+    struct sockaddr * addr, socklen_t addr_len, IUINT32 conv, IUINT32 cmd);
 static int kcp_recv_data(server_t * server, remote_t * remote);
 static void kcp_log(const char *log, ikcpcb *kcp, void *user);
 static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents);
 static void kcp_recv_cb(EV_P_ ev_io *w, int revents);
-static server_t * kcp_find_server(int conv);
+static server_t * kcp_find_server(IUINT32 conv);
 
 static ebb_connection * control_new_connection(ebb_server *server, struct sockaddr_in *addr);
 static ebb_request* control_conn_new_request(ebb_connection * ebb_conn);
@@ -1575,6 +1584,48 @@ static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user) {
 	return nret;
 }
 
+static int kcp_send_cmd(
+    listen_ctx_t * listener, server_t * server,
+    struct sockaddr * addr, socklen_t addr_len, IUINT32 conv, IUINT32 cmd)
+{
+    unsigned char buf[5];
+    
+#if IWORDS_BIG_ENDIAN
+	buf[0] = (unsigned char)((conv >>  0) & 0xff);
+	buf[1] = (unsigned char)((conv >>  8) & 0xff);
+	buf[2] = (unsigned char)((conv >> 16) & 0xff);
+	buf[3] = (unsigned char)((conv >> 24) & 0xff);
+#else
+	*(IUINT32*)buf = conv;
+#endif
+    buf[4] = cmd;
+    int len = sizeof(buf);
+
+    char server_name[32];
+    if (server) {
+        snprintf(server_name, sizeof(server_name), "server[%d]", server->fd);
+    }
+    else {
+        strncpy(server_name, "kcp", sizeof(server_name));
+    }
+    
+	int nret = sendto(listener->kcp_fd, buf, len, 0, addr, addr_len);
+    if (nret < 0) {
+        LOGE("%s: udp         >>> %d [conv=%d, cmd=%d] | send error: %s", server_name, len, (int)conv, (int)cmd, strerror(errno));
+    }
+    else {
+        if (nret != len) {
+            LOGE("%s: udp         >>> %d [conv=%d, cmd=%d] | %d", server_name, nret, (int)conv, (int)cmd, (len - nret));
+        }
+        else {
+            if (verbose) {
+                LOGI("%s: udp         >>> %d [conv=%d, cmd=%d]", server_name, nret, (int)conv, (int)cmd);
+            }
+        }
+    }
+    return nret;
+}
+
 static void kcp_log(const char *log, ikcpcb *kcp, void *user) {
     remote_t * remote = user;
     server_t * server = remote->server;
@@ -1637,14 +1688,32 @@ static void kcp_recv_cb(EV_P_ ev_io *w, int revents) {
     }
 
     if (nrecv == 0) return;
-        
-    int conv = ikcp_getconv(buf);
+
+    if (nrecv < 5) {
+        LOGE("kcp: udp            <<< %d | error, len too small, at least 5", nrecv);
+        return;
+    }
+    
+    IUINT32 conv = ikcp_getconv(buf);
+    char kcp_cmd = buf[4];
 
     server_t * server = kcp_find_server(conv);
     if (server == NULL) {
-        if (verbose) {
-            LOGE("kcp: udp         <<< server not found");
+        if (kcp_cmd != IKCP_CMD_EXT_REMOVE) {
+            if (verbose) {
+                LOGE("kcp: server not found, conv=%d, cmd=%d", conv, kcp_cmd);
+            }
+            kcp_send_cmd(listen_ctx, NULL, (struct sockaddr *)&remote_addr, (socklen_t)remote_addr_len, conv, IKCP_CMD_EXT_REMOVE);
         }
+        return;
+    }
+
+    if (kcp_cmd == IKCP_CMD_EXT_REMOVE) {
+        if (verbose) {
+            LOGI("server[%d]: server free(remote cmd remove)", server->fd);
+        }
+        close_and_free_remote(EV_A_ server->remote);
+        close_and_free_server(EV_A_ server);
         return;
     }
 
@@ -1659,7 +1728,7 @@ static void kcp_recv_cb(EV_P_ ev_io *w, int revents) {
     int nret = ikcp_input(remote->kcp, buf, nrecv);
     if (nret < 0) {
         if (verbose) {
-            LOGE("server[%d]: kcp input %d data fail, rv=%d", server->fd, nrecv, nret);
+            LOGE("server[%d]: server free(kcp input %d data fail, rv=%d)", server->fd, nrecv, nret);
         }
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
@@ -1680,7 +1749,7 @@ static void kcp_recv_cb(EV_P_ ev_io *w, int revents) {
     }
 }
 
-static server_t * kcp_find_server(int conv) {
+static server_t * kcp_find_server(IUINT32 conv) {
     struct cork_dllist_item *curr, *next;
     cork_dllist_foreach_void(&connections, curr, next) {
         server_t * server = cork_container_of(curr, server_t, entries);

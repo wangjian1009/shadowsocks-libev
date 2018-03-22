@@ -119,19 +119,18 @@ extern IUINT32 IKCP_CMD_PUSH /* = 81*/;
 extern IUINT32 IKCP_CMD_ACK  /*= 82*/;
 extern IUINT32 IKCP_CMD_WASK /*= 83*/;
 extern IUINT32 IKCP_CMD_WINS /*= 84*/;
-const IUINT32 IKCP_CMD_EXT_CLOSE_1 = 88;
-const IUINT32 IKCP_CMD_EXT_CLOSE_2 = 89;
+const IUINT32 IKCP_CMD_EXT_REMOVE = 89;
 
 static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user);
 static int kcp_send_cmd(
     listen_ctx_t * listener, server_t * server,
-    struct sockaddr * addr, socklen_t addr_len, IUINT32 cmd);
+    struct sockaddr * addr, socklen_t addr_len, IUINT32 conv, IUINT32 cmd);
 static void kcp_log(const char *log, ikcpcb *kcp, void *user);
 static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents);
 static void kcp_do_update(server_t *server);
 static void kcp_timer_reset(EV_P_ server_t *server);
 static int kcp_forward_data(EV_P_ server_t  * server);
-static server_t * kcp_find_server(int conv, struct sockaddr_storage * addr);
+static server_t * kcp_find_server(IUINT32 conv, struct sockaddr_storage * addr);
 /**/
 
 #define IO_START(__h, __msg, args...)           \
@@ -1893,16 +1892,18 @@ accept_cb(EV_P_ ev_io *w, int revents)
             return;
         }
         
-        int conv = ikcp_getconv(buf);
+        IUINT32 conv = ikcp_getconv(buf);
         char kcp_cmd = buf[4];
 
         server_t * server = kcp_find_server(conv, &clientaddr);
         if (server == NULL) {
             if (kcp_cmd != IKCP_CMD_PUSH) {
-                if (verbose) {
-                    LOGI("%d: udp >>> ignore cmd %d, only push start server", listener->fd, kcp_cmd);
+                if (kcp_cmd != IKCP_CMD_EXT_REMOVE) {
+                    if (verbose) {
+                        LOGI("%d: udp >>> ignore cmd %d, only push start server", listener->fd, kcp_cmd);
+                    }
+                    kcp_send_cmd(listener, NULL, (struct sockaddr *)&clientaddr, (socklen_t)clientlen, conv, IKCP_CMD_EXT_REMOVE);
                 }
-                kcp_send_cmd(listener, NULL, (struct sockaddr *)&clientaddr, (socklen_t)clientlen, IKCP_CMD_EXT_CLOSE_2);
                 return;
             }
 
@@ -1915,6 +1916,15 @@ accept_cb(EV_P_ ev_io *w, int revents)
                 server->recv_ctx->watcher,
                 "%d: %s: udp [+ <<< timeout]",
                 listener->fd, server->peer_name);
+        }
+
+        if (kcp_cmd == IKCP_CMD_EXT_REMOVE) {
+            if (verbose) {
+                LOGI("%d: %s: server free(remote cmd remove)", server->listen_ctx->fd, server->peer_name);
+            }
+            close_and_free_remote(EV_A_ server->remote);
+            close_and_free_server(EV_A_ server);
+            return;
         }
 
 		int nret = ikcp_input(server->kcp, buf, len);
@@ -2039,17 +2049,16 @@ static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user) {
 
 static int kcp_send_cmd(
     listen_ctx_t * listener, server_t * server,
-    struct sockaddr * addr, socklen_t addr_len, IUINT32 cmd)
+    struct sockaddr * addr, socklen_t addr_len, IUINT32 conv, IUINT32 cmd)
 {
     unsigned char buf[5];
-    IUINT32 conv = server->kcp->conv;
 #if IWORDS_BIG_ENDIAN
 	buf[0] = (unsigned char)((conv >>  0) & 0xff);
 	buf[1] = (unsigned char)((conv >>  8) & 0xff);
 	buf[2] = (unsigned char)((conv >> 16) & 0xff);
 	buf[3] = (unsigned char)((conv >> 24) & 0xff);
 #else
-	*(IUINT32*)buf = cmd;
+	*(IUINT32*)buf = conv;
 #endif
     buf[4] = cmd;
     int len = sizeof(buf);
@@ -2145,7 +2154,7 @@ static int kcp_forward_data(EV_P_ server_t  * server)
     return 0;
 }
 
-static server_t * kcp_find_server(int conv, struct sockaddr_storage * addr) {
+static server_t * kcp_find_server(IUINT32 conv, struct sockaddr_storage * addr) {
     struct cork_dllist_item *curr, *next;
     cork_dllist_foreach_void(&connections, curr, next) {
         server_t * server = cork_container_of(curr, server_t, entries);
