@@ -79,6 +79,7 @@ typedef struct server_ctx {
 typedef struct server {
     int fd;
     int stage;
+    char name[64];
 
     cipher_ctx_t *e_ctx;
     cipher_ctx_t *d_ctx;
