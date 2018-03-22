@@ -115,9 +115,20 @@ static void resolv_cb(struct sockaddr *addr, void *data);
 static void resolv_free_cb(void *data);
 
 /*Loki: kcp */
+extern IUINT32 IKCP_CMD_PUSH /* = 81*/;
+extern IUINT32 IKCP_CMD_ACK  /*= 82*/;
+extern IUINT32 IKCP_CMD_WASK /*= 83*/;
+extern IUINT32 IKCP_CMD_WINS /*= 84*/;
+const IUINT32 IKCP_CMD_EXT_CLOSE_1 = 88;
+const IUINT32 IKCP_CMD_EXT_CLOSE_2 = 89;
+
 static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user);
+static int kcp_send_cmd(
+    listen_ctx_t * listener, server_t * server,
+    struct sockaddr * addr, socklen_t addr_len, IUINT32 cmd);
 static void kcp_log(const char *log, ikcpcb *kcp, void *user);
 static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents);
+static void kcp_do_update(server_t *server);
 static void kcp_timer_reset(EV_P_ server_t *server);
 static int kcp_forward_data(EV_P_ server_t  * server);
 static server_t * kcp_find_server(int conv, struct sockaddr_storage * addr);
@@ -1037,7 +1048,14 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     buffer_t *buf = server->buf;
 
     if (server->stage == STAGE_STREAM) {
-        assert(server->remote);
+        if (server->remote == NULL) {
+            IO_STOP(
+                server->recv_ctx->io,
+                "%d: %s: tcp [- >>>] | remote closed",
+                server->listen_ctx->fd, server->peer_name);
+            return;
+        }
+        
         buf    = server->remote->buf;
         ev_timer_again(EV_A_ & server->recv_ctx->watcher);
     }
@@ -1050,7 +1068,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         // connection closed
         if (verbose) {
             LOGI(
-                "%d: %s: tcp close connection(server recv)",
+                "%d: %s: server free(remote colsed in recv)",
                 server->listen_ctx->fd, server->peer_name);
         }
         close_and_free_remote(EV_A_ server->remote);
@@ -1062,7 +1080,9 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             // continue to wait for recv
             return;
         } else {
-            ERROR("server recv");
+            LOGE(
+                "%d: %s: server free(remote recv error %s)",
+                server->listen_ctx->fd, server->peer_name, strerror(errno));
             close_and_free_remote(EV_A_ server->remote);
             close_and_free_server(EV_A_ server);
             return;
@@ -1093,7 +1113,7 @@ server_send_cb(EV_P_ ev_io *w, int revents)
     assert(!server->kcp);
     
     if (remote == NULL) {
-        LOGE("%d: %s: invalid server(no remote)", server->listen_ctx->fd, server->peer_name);
+        LOGE("%d: %s: server free(send no remote)", server->listen_ctx->fd, server->peer_name);
         close_and_free_server(EV_A_ server);
         return;
     }
@@ -1102,7 +1122,7 @@ server_send_cb(EV_P_ ev_io *w, int revents)
         // close and free
         if (verbose) {
             LOGI(
-                "%d: %s: tcp close connection(server send no data)",
+                "%d: %s: server free(server send no data)",
                 server->listen_ctx->fd, server->peer_name);
         }
         close_and_free_remote(EV_A_ remote);
@@ -1111,11 +1131,12 @@ server_send_cb(EV_P_ ev_io *w, int revents)
     } else {
         // has data to send
         assert(!server->kcp);
-        ssize_t s = send(server->fd_or_conv, server->buf->data + server->buf->idx,
-                         server->buf->len, 0);
+        ssize_t s = send(server->fd_or_conv, server->buf->data + server->buf->idx, server->buf->len, 0);
         if (s == -1) {
             if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                ERROR("server_send_send");
+                LOGE(
+                    "%d: %s: server free(tcp send error %s)",
+                    server->listen_ctx->fd, server->peer_name, strerror(errno));
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
             }
@@ -1150,12 +1171,7 @@ server_send_cb(EV_P_ ev_io *w, int revents)
                     server->listen_ctx->fd, server->peer_name);
             }
             
-            if (remote == NULL) {
-                LOGE("%d: %s: invalid remote", server->listen_ctx->fd, server->peer_name);
-                close_and_free_remote(EV_A_ remote);
-                close_and_free_server(EV_A_ server);
-                return;
-            }
+            assert(remote);
             
             IO_START(
                 remote->recv_ctx->io,
@@ -1184,10 +1200,7 @@ server_timeout_cb(EV_P_ ev_timer *watcher, int revents)
     server_t *server = server_ctx->server;
     remote_t *remote = server->remote;
 
-    if (verbose) {
-        LOGI("%d: %s: TCP connection timeout", server->listen_ctx->fd, server->peer_name);
-    }
-
+    LOGE("%d: %s: server free(timeout)", server->listen_ctx->fd, server->peer_name);
     close_and_free_remote(EV_A_ remote);
     close_and_free_server(EV_A_ server);
 }
@@ -1216,7 +1229,7 @@ resolv_cb(struct sockaddr *addr, void *data)
     struct ev_loop *loop = server->listen_ctx->loop;
 
     if (addr == NULL) {
-        LOGE("%d: %s: unable to resolve %s", server->listen_ctx->fd, server->peer_name, query->hostname);
+        LOGE("%d: %s: server free(unable to resolve %s)", server->listen_ctx->fd, server->peer_name, query->hostname);
         close_and_free_server(EV_A_ server);
     } else {
         if (verbose) {
@@ -1240,7 +1253,7 @@ resolv_cb(struct sockaddr *addr, void *data)
         remote_t *remote = connect_to_remote(EV_A_ & info, server);
 
         if (remote == NULL) {
-            LOGE("%d: %s: connect error", server->listen_ctx->fd, server->peer_name);
+            LOGE("%d: %s: server free(connect error)", server->listen_ctx->fd, server->peer_name);
             close_and_free_server(EV_A_ server);
         } else {
             server->remote = remote;
@@ -1285,12 +1298,34 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
 
     if (r == 0) {
         // connection closed
-        if (verbose) {
-            LOGI("%d: %s: svr close the connection(remote receive)", server->listen_ctx->fd, server->peer_name);
+        if (server->kcp) {
+            ikcp_flush(server->kcp);
+            
+            if (ikcp_waitsnd(server->kcp) == 0) {
+                if (verbose) {
+                    LOGI(
+                        "%d: %s: server free(remote disconnected, wait-send=%d)",
+                        server->listen_ctx->fd, server->peer_name, ikcp_waitsnd(server->kcp));
+                }
+                close_and_free_remote(EV_A_ remote);
+                close_and_free_server(EV_A_ server);
+            }
+            else {
+                if (verbose) {
+                    LOGI(
+                        "%d: %s: remote free(remote disconnected, wait-send=%d)",
+                        server->listen_ctx->fd, server->peer_name, ikcp_waitsnd(server->kcp));
+                }
+                close_and_free_remote(EV_A_ remote);
+            }
         }
-        if (server->kcp) ikcp_flush(server->kcp);
-        close_and_free_remote(EV_A_ remote);
-        close_and_free_server(EV_A_ server);
+        else {
+            if (verbose) {
+                LOGI("%d: %s: server free(remote disconnected)", server->listen_ctx->fd, server->peer_name);
+            }
+            close_and_free_remote(EV_A_ remote);
+            close_and_free_server(EV_A_ server);
+        }
         return;
     } else if (r == -1) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -1298,13 +1333,10 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
             // continue to wait for recv
             return;
         } else {
-            if (verbose) {
-                LOGE(
-                    "%d: %s: svr close the connection(remote receive error %s)",
-                    server->listen_ctx->fd, server->peer_name, strerror(errno));
-            }
+            LOGE(
+                "%d: %s: server free(remote receive error %s)",
+                server->listen_ctx->fd, server->peer_name, strerror(errno));
             
-            ERROR("remote recv");
             if (server->kcp) ikcp_flush(server->kcp);
             close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
@@ -1324,7 +1356,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     int err = crypto->encrypt(server->buf, server->e_ctx, BUF_SIZE);
 
     if (err) {
-        LOGE("%d: %s: invalid password or cipher", server->listen_ctx->fd, server->peer_name);
+        LOGE("%d: %s: server free(invalid password or cipher)", server->listen_ctx->fd, server->peer_name);
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
         return;
@@ -1336,10 +1368,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     if (server->kcp) {
         int nret = ikcp_send(server->kcp, server->buf->data, server->buf->len);
         if (nret < 0) {
-            if (verbose) {
-                LOGE("%d: %s: kcp_send error, len=%d, rv=%d", server->listen_ctx->fd, server->peer_name, (int)server->buf->len, nret);
-            }
-            ERROR("kcp_input_error");
+            LOGE("%d: %s: server free(kcp_send error, len=%d, rv=%d)", server->listen_ctx->fd, server->peer_name, (int)server->buf->len, nret);
             close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
             return;
@@ -1369,7 +1398,9 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
                     "%d: %s: tcp [+ <<<] | tcp send would block",
                     server->listen_ctx->fd, server->peer_name);
             } else {
-                ERROR("remote_recv_send");
+                LOGE(
+                    "%d: %s: server free(tcp send error %s)",
+                    server->listen_ctx->fd, server->peer_name, strerror(errno));
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
                 return;
@@ -1405,7 +1436,6 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
             server->buf->len = 0;
 
             if (server->kcp && kcp_forward_data(EV_A_ server) != 0) {
-                LOGE("%d: %s: xxxxxx forward error", server->listen_ctx->fd, server->peer_name);
                 close_and_free_remote(EV_A_ server->remote);
                 close_and_free_server(EV_A_ server);
             }
@@ -1499,8 +1529,9 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
                 return;
             }
         } else {
-            ERROR("getpeername");
-            // not connected
+            LOGE(
+                "%d: %s: server free(getpeername error %s)",
+                server->listen_ctx->fd, server->peer_name, strerror(errno));
             close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
             return;
@@ -1510,7 +1541,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
     if (remote->buf->len == 0) {
         // close and free
         if (verbose) {
-            LOGI("%d: %s: close the connection(remote send)", server->listen_ctx->fd, server->peer_name);
+            LOGI("%d: %s: server free(remote send)", server->listen_ctx->fd, server->peer_name);
         }
         if (server->kcp) ikcp_flush(server->kcp);
         close_and_free_remote(EV_A_ remote);
@@ -1521,8 +1552,9 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
         ssize_t s = send(remote->fd, remote->buf->data + remote->buf->idx, remote->buf->len, 0);
         if (s == -1) {
             if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                ERROR("remote_send_send");
-                // close and free
+                LOGE(
+                    "%d: %s: server free(send to remote error %s)",
+                    server->listen_ctx->fd, server->peer_name, strerror(errno));
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
             }
@@ -1571,7 +1603,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
                         server->listen_ctx->fd, server->peer_name);
                 }
             } else {
-                LOGE("%d: %s: invalid server", server->listen_ctx->fd, server->peer_name);
+                LOGE("%d: ????: invalid server", server->listen_ctx->fd);
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
             }
@@ -1856,20 +1888,21 @@ accept_cb(EV_P_ ev_io *w, int revents)
             return;
         }	
 
-        if (len < 24/*IKCP_OVERHEAD*/) {
-            LOGE("%d: udp >>> len %d too small, at least 24", listener->fd, len);
+        if (len < 5) {
+            LOGE("%d: udp >>> len %d too small, at least 5", listener->fd, len);
             return;
         }
         
         int conv = ikcp_getconv(buf);
+        char kcp_cmd = buf[4];
 
         server_t * server = kcp_find_server(conv, &clientaddr);
         if (server == NULL) {
-            char kcp_cmd = buf[4];
-            if (kcp_cmd != 81/*IKCP_CMD_PUSH*/) {
+            if (kcp_cmd != IKCP_CMD_PUSH) {
                 if (verbose) {
                     LOGI("%d: udp >>> ignore cmd %d, only push start server", listener->fd, kcp_cmd);
                 }
+                kcp_send_cmd(listener, NULL, (struct sockaddr *)&clientaddr, (socklen_t)clientlen, IKCP_CMD_EXT_CLOSE_2);
                 return;
             }
 
@@ -1891,16 +1924,32 @@ accept_cb(EV_P_ ev_io *w, int revents)
 		}
 
         if (verbose) {
-			LOGI("%d: %s: udp >>> %d", listener->fd, server->peer_name, len);
+			LOGI(
+                "%d: %s: udp >>> %d | wait-send=%d, peek-size=%d",
+                listener->fd, server->peer_name, len,
+                ikcp_waitsnd(server->kcp), ikcp_peeksize(server->kcp));
+        }
+
+        if (! (server->stage == STAGE_STREAM && server->remote == NULL) ) {
+            if (kcp_forward_data(EV_A_ server) != 0) {
+                LOGE("%d: %s: server free(forward error)", server->listen_ctx->fd, server->peer_name);
+                close_and_free_remote(EV_A_ server->remote);
+                close_and_free_server(EV_A_ server);
+                return;
+            }
+        }
+        
+        if (server->stage == STAGE_STREAM && server->remote == NULL) {
+            if (ikcp_waitsnd(server->kcp) == 0) {
+                if (verbose) {
+                    LOGI("%d: %s: server free(all data send)", listener->fd, server->peer_name);
+                }
+                close_and_free_server(EV_A_ server);
+                return;
+            }
         }
 
         kcp_timer_reset(EV_A_ server);
-        
-        if (kcp_forward_data(EV_A_ server) != 0) {
-            LOGE("%d: %s: forward error", server->listen_ctx->fd, server->peer_name);
-            close_and_free_remote(EV_A_ server->remote);
-            close_and_free_server(EV_A_ server);
-        }
     }
     else {
         int fd = accept(listener->fd, NULL, NULL);
@@ -1988,6 +2037,37 @@ static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user) {
 	return nret;
 }
 
+static int kcp_send_cmd(
+    listen_ctx_t * listener, server_t * server,
+    struct sockaddr * addr, socklen_t addr_len, IUINT32 cmd)
+{
+    unsigned char buf[5];
+    IUINT32 conv = server->kcp->conv;
+#if IWORDS_BIG_ENDIAN
+	buf[0] = (unsigned char)((conv >>  0) & 0xff);
+	buf[1] = (unsigned char)((conv >>  8) & 0xff);
+	buf[2] = (unsigned char)((conv >> 16) & 0xff);
+	buf[3] = (unsigned char)((conv >> 24) & 0xff);
+#else
+	*(IUINT32*)buf = cmd;
+#endif
+    buf[4] = cmd;
+    int len = sizeof(buf);
+    
+	int nret = sendto(listener->fd, buf, len, 0, addr, addr_len);
+	if (nret > 0) {
+        if (verbose) {
+            if (nret != sizeof(buf)) {
+                LOGI("%d: %s: udp <<< %d | %d", listener->fd, server ? server->peer_name : "????", nret, (len - nret));
+            }
+        }
+    }
+	else {
+        LOGE("%d: %s: udp <<< %d cmd data error: %s", listener->fd, server ? server->peer_name : "????", len, strerror(errno));
+    }
+    return nret;
+}
+
 static void kcp_log(const char *log, ikcpcb *kcp, void *user) {
     server_t * server = user;
     LOGI("%d: %s: kcp                                                | %s", server->listen_ctx->fd, server->peer_name, log);
@@ -1995,6 +2075,11 @@ static void kcp_log(const char *log, ikcpcb *kcp, void *user) {
 
 static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents) {
     server_t * server = watcher->data;
+    kcp_do_update(server);
+    kcp_timer_reset(EV_A_ server);
+}
+
+static void kcp_do_update(server_t * server) {
     struct timeval ptv;
     IUINT32 millisec;
 
@@ -2002,8 +2087,6 @@ static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents) {
 
     millisec = (IUINT32)(ptv.tv_usec / 1000) + (IUINT32)ptv.tv_sec * 1000;
     ikcp_update(server->kcp, millisec);
-
-    kcp_timer_reset(EV_A_ server);
 }
 
 static void kcp_timer_reset(EV_P_ server_t *server) {
@@ -2032,7 +2115,7 @@ static int kcp_forward_data(EV_P_ server_t  * server)
     buffer_t *buf = server->buf;
     if (server->stage == STAGE_STREAM) {
         assert(server->remote);
-        buf    = server->remote->buf;
+        buf = server->remote->buf;
         ev_timer_again(EV_A_ & server->recv_ctx->watcher);
     }
 
