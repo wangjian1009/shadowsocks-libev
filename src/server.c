@@ -1106,12 +1106,15 @@ server_process_data(EV_P_ server_t * server, buffer_t *buf)
 
         return 0;
     }
-    // should not reach here
-    LOGE(
-        "%d: %s: server free(server context error)",
-        server->listen_ctx->fd, server->peer_name);
-    //FATAL("server context error");
-    return -1;
+    else {
+        // should not reach here
+        if (verbose) {
+            LOGI(
+                "%d: %s: ignore process in state %d",
+                server->listen_ctx->fd, server->peer_name, server->stage);
+        }
+        return 0;
+    }
 }
 
 static void
@@ -1258,6 +1261,7 @@ server_send_cb(EV_P_ ev_io *w, int revents)
                 server->listen_ctx->fd, server->peer_name);
 
             if (server->kcp && kcp_forward_data(EV_A_ server) != 0) {
+                LOGE("%d: %s: server free(on server send)", server->listen_ctx->fd, server->peer_name);
                 close_and_free_remote(EV_A_ server->remote);
                 close_and_free_server(EV_A_ server, 1);
             }
@@ -1531,6 +1535,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
             server->buf->len = 0;
 
             if (server->kcp && kcp_forward_data(EV_A_ server) != 0) {
+                LOGE("%d: %s: server free(on remote recv cb)", server->listen_ctx->fd, server->peer_name);
                 close_and_free_remote(EV_A_ server->remote);
                 close_and_free_server(EV_A_ server, 1);
             }
@@ -2071,6 +2076,7 @@ accept_cb(EV_P_ ev_io *w, int revents)
 
         if (! (server->stage == STAGE_STREAM && server->remote == NULL) ) {
             if (kcp_forward_data(EV_A_ server) != 0) {
+                LOGE("%d: %s: server free(on accept cb)", server->listen_ctx->fd, server->peer_name);
                 close_and_free_remote(EV_A_ server->remote);
                 close_and_free_server(EV_A_ server, 1);
                 return;
@@ -2233,6 +2239,7 @@ static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents) {
     
     kcp_do_update(server);
     if (server->remote && kcp_forward_data(EV_A_ server) != 0) {
+        LOGE("%d: %s: server free(on update)", server->listen_ctx->fd, server->peer_name);
         close_and_free_remote(EV_A_ server->remote);
         close_and_free_server(EV_A_ server, 1);
         return;
@@ -2275,8 +2282,10 @@ static int kcp_forward_data(EV_P_ server_t  * server)
     }
 
     if (buf->len > 0) {
-        LOGE("%d: %s: server free(kcp recv with buf len %d)", server->listen_ctx->fd, server->peer_name, (int)buf->len);
-        return -1;
+        if (verbose) {
+            LOGI("%d: %s: ignore froward (kcp recv with buf len %d)", server->listen_ctx->fd, server->peer_name, (int)buf->len);
+        }
+        return 0;
     }
 
     int peek_size = ikcp_peeksize(server->kcp);
