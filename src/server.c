@@ -559,7 +559,7 @@ connect_to_remote(EV_P_ struct addrinfo *res, server_t *server) {
     // initialize remote socks
     sockfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (sockfd == -1) {
-        ERROR("socket");
+        LOGE("%d: %s: socket error, %s", server->listen_ctx->fd, server->peer_name, strerror(errno));
         close(sockfd);
         return NULL;
     }
@@ -573,20 +573,22 @@ connect_to_remote(EV_P_ struct addrinfo *res, server_t *server) {
 
     // setup remote socks
 
-    if (setnonblocking(sockfd) == -1)
-        ERROR("setnonblocking");
+    if (setnonblocking(sockfd) == -1) {
+        LOGE("%d: %s: setnonblocking error, %s", server->listen_ctx->fd, server->peer_name, strerror(errno));
+    }
 
-    if (local_addr != NULL)
+    if (local_addr != NULL) {
         if (bind_to_address(sockfd, local_addr) == -1) {
-            ERROR("bind_to_address");
+            LOGE("%d: %s: bind to address error, %s", server->listen_ctx->fd, server->peer_name, strerror(errno));
             close(sockfd);
             return NULL;
         }
+    }
 
 #ifdef SET_INTERFACE
     if (iface) {
         if (setinterface(sockfd, iface) == -1) {
-            ERROR("setinterface");
+            LOGE("%d: %s: setinterface error, %s", server->listen_ctx->fd, server->peer_name, strerror(errno));
             close(sockfd);
             return NULL;
         }
@@ -606,29 +608,28 @@ connect_to_remote(EV_P_ struct addrinfo *res, server_t *server) {
         do {
             int optval = 1;
             // Set fast open option
-            if (setsockopt(sockfd, IPPROTO_TCP, TCP_FASTOPEN,
-                           &optval, sizeof(optval)) != 0) {
-                ERROR("setsockopt");
+            if (setsockopt(sockfd, IPPROTO_TCP, TCP_FASTOPEN, &optval, sizeof(optval)) != 0) {
+                LOGE("%d: %s: set fast open option error, %s", server->listen_ctx->fd, server->peer_name, strerror(errno));
                 break;
             }
             // Load ConnectEx function
             LPFN_CONNECTEX ConnectEx = winsock_getconnectex();
             if (ConnectEx == NULL) {
-                LOGE("Cannot load ConnectEx() function");
+                LOGE("%d: %s: Cannot load ConnectEx() function", strerror->listen_ctx->fd, server->peer_name);
                 err = WSAENOPROTOOPT;
                 break;
             }
             // ConnectEx requires a bound socket
             if (winsock_dummybind(sockfd, res->ai_addr) != 0) {
-                ERROR("bind");
+                LOGE("%d: %s: bind error, %s", server->listen_ctx->fd, server->peer_name, strerror(errno));
                 break;
             }
             // Call ConnectEx to send data
             memset(&remote->olap, 0, sizeof(remote->olap));
             remote->connect_ex_done = 0;
             if (ConnectEx(sockfd, res->ai_addr, res->ai_addrlen,
-                          server->buf->data, server->buf->len,
-                          &s, &remote->olap)) {
+                          server->buf->data, server->buf->len, &s, &remote->olap))
+            {
                 remote->connect_ex_done = 1;
                 break;
             };
@@ -637,7 +638,7 @@ connect_to_remote(EV_P_ struct addrinfo *res, server_t *server) {
                 err = CONNECT_IN_PROGRESS;
                 break;
             }
-            ERROR("ConnectEx");
+            LOGE("%d: %s: ConnectEx error, %s", server->listen_ctx->fd, server->peer_name, strerror(errno));
         } while(0);
         // Set error number
         if (err) {
@@ -677,7 +678,7 @@ connect_to_remote(EV_P_ struct addrinfo *res, server_t *server) {
                 LOGE("fast open is not supported on this platform");
             }
             else {
-                ERROR("fast_open_connect");
+                LOGE("%d: %s: connect or send error, %s", server->listen_ctx->fd, server->peer_name, strerror(errno));
             }
         }
         else {
@@ -690,7 +691,8 @@ connect_to_remote(EV_P_ struct addrinfo *res, server_t *server) {
         int r = connect(sockfd, res->ai_addr, res->ai_addrlen);
 
         if (r == -1 && errno != CONNECT_IN_PROGRESS) {
-            ERROR("connect");
+            LOGE("%d: %s: connect error, %s", server->listen_ctx->fd, server->peer_name, strerror(errno));
+            remote->server = server;
             close_and_free_remote(EV_A_ remote);
             return NULL;
         }
