@@ -337,8 +337,8 @@ free_connections(struct ev_loop *loop)
     cork_dllist_foreach_void(&connections, curr, next) {
         server_t *server = cork_container_of(curr, server_t, entries);
         remote_t *remote = server->remote;
-        close_and_free_server(loop, server);
         close_and_free_remote(loop, remote);
+        close_and_free_server(loop, server);
     }
 }
 
@@ -1069,6 +1069,7 @@ server_send_cb(EV_P_ ev_io *w, int revents)
                     if (send_to_client(EV_A_ server, remote) != 0) {
                         close_and_free_remote(EV_A_ remote);
                         close_and_free_server(EV_A_ server);
+                        return;
                     }
                 }
             }
@@ -1155,6 +1156,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     if (send_to_client(EV_A_ server, remote) != 0) {
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
+        return;
     }
 }
 
@@ -1855,6 +1857,7 @@ static void kcp_recv_cb(EV_P_ ev_io *w, int revents) {
         if (send_to_client(EV_A_ server, remote) != 0) {
             close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
+            return;
         }
     }
 }
