@@ -81,7 +81,7 @@
 #endif
 
 #ifndef DFT_BUF_SIZE
-#define DFT_BUF_SIZE 2048
+#define DFT_BUF_SIZE (1024 * 2)
 #endif
 
 int verbose        = 0;
@@ -117,6 +117,8 @@ static int nofile = 0;
 #endif
 #endif
 
+static IUINT32 cur_time_ms(void);
+
 static void server_recv_cb(EV_P_ ev_io *w, int revents);
 static void server_send_cb(EV_P_ ev_io *w, int revents);
 static void remote_recv_cb(EV_P_ ev_io *w, int revents);
@@ -142,6 +144,7 @@ extern IUINT32 IKCP_CMD_PUSH /* = 81*/;
 extern IUINT32 IKCP_CMD_ACK  /*= 82*/;
 extern IUINT32 IKCP_CMD_WASK /*= 83*/;
 extern IUINT32 IKCP_CMD_WINS /*= 84*/;
+const IUINT32 IKCP_CMD_EXT_SHK = 88;
 const IUINT32 IKCP_CMD_EXT_REMOVE = 89;
 
 static int send_to_client(EV_P_ server_t * server, remote_t * remote);
@@ -195,6 +198,12 @@ static void control_request_on_complete(ebb_request * ebb_req);
 /**/
 
 static struct cork_dllist connections;
+
+static IUINT32 cur_time_ms(void) {
+    struct timeval ptv;
+	gettimeofday(&ptv, NULL);
+    return (IUINT32)(ptv.tv_usec / 1000) + (IUINT32)ptv.tv_sec * 1000;
+}
 
 #ifndef __MINGW32__
 int
@@ -444,7 +453,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 }
 
                 if (server->abuf) {
-                    bprepend(remote->buf, server->abuf, DFT_BUF_SIZE);
+                    bprepend(remote->buf, server->abuf, remote->buf->capacity);
                     bfree(server->abuf);
                     ss_free(server->abuf);
                     server->abuf = NULL;
@@ -743,7 +752,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
                 buffer_t resp_to_send;
                 buffer_t *resp_buf = &resp_to_send;
-                balloc(resp_buf, DFT_BUF_SIZE);
+                balloc(resp_buf, 2048);
 
                 memcpy(resp_buf->data, &response, sizeof(struct socks5_response));
                 memcpy(resp_buf->data + sizeof(struct socks5_response),
@@ -854,7 +863,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 else if (dst_port == tls_protocol->default_port)
                     ret = tls_protocol->parse_packet(buf->data + 3 + abuf->len,
                                                      buf->len - 3 - abuf->len, &hostname);
-                if (ret == -1 && buf->len < DFT_BUF_SIZE && server->stage != STAGE_SNI) {
+                if (ret == -1 && buf->len < buf->capacity && server->stage != STAGE_SNI) {
                     server->stage = STAGE_SNI;
                     TIMER_START(server->delayed_connect_watcher, "server[%s]: tcp [+ delay connect]", server->name);
                     return;
@@ -976,7 +985,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             }
 
             if (!remote->direct) {
-                int err = crypto->encrypt(abuf, server->e_ctx, DFT_BUF_SIZE);
+                int err = crypto->encrypt(abuf, server->e_ctx, abuf->capacity);
                 if (err) {
                     LOGE("server[%s]: server free(invalid password or cipher)", server->name);
                     close_and_free_remote(EV_A_ remote);
@@ -1329,6 +1338,8 @@ new_remote(listen_ctx_t *listener, int fd, int timeout, uint8_t use_kcp)
             remote->kcp,
             listener->kcp_nodelay, listener->kcp_interval,
             listener->kcp_resend, listener->kcp_nc);
+
+        remote->kcp_last_send_ms = cur_time_ms();
     }
     else {
         remote->kcp = NULL;
@@ -1394,7 +1405,7 @@ new_server(int fd)
     server->buf->idx = 0;
     server->abuf     = ss_malloc(sizeof(buffer_t));
     balloc(server->buf, DFT_BUF_SIZE);
-    balloc(server->abuf, DFT_BUF_SIZE);
+    balloc(server->abuf, 2048);
     memset(server->recv_ctx, 0, sizeof(server_ctx_t));
     memset(server->send_ctx, 0, sizeof(server_ctx_t));
     server->stage               = STAGE_INIT;
@@ -1763,12 +1774,8 @@ static int kcp_recv_data(server_t * server, remote_t * remote) {
 }
 
 static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents) {
-    struct timeval ptv;
-    IUINT32 curtime_ms;
-
-	gettimeofday(&ptv, NULL);
-
-    curtime_ms = (IUINT32)(ptv.tv_usec / 1000) + (IUINT32)ptv.tv_sec * 1000;
+    listen_ctx_t * listener = watcher->data;
+    IUINT32 curtime_ms = cur_time_ms();
     
     struct cork_dllist_item *curr, *next;
     cork_dllist_foreach_void(&connections, curr, next) {
@@ -1778,7 +1785,22 @@ static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents) {
         if (remote == NULL || remote->kcp == NULL) continue;
         
         ikcp_update(remote->kcp, curtime_ms);
+
+        if (curtime_ms - remote->kcp_last_send_ms > listener->kcp_shk_ms) {
+            kcp_send_cmd(
+                listener, server, (struct sockaddr *)&remote->addr, (socklen_t)remote->addr_len,
+                remote->kcp->conv, IKCP_CMD_EXT_SHK);
+            listener->kcp_last_send_ms = curtime_ms;
+            remote->kcp_last_send_ms = curtime_ms;
+        }
     }
+
+    /* if (curtime_ms - listener->kcp_last_send_ms > listener->kcp_shk_ms) { */
+    /*     kcp_send_cmd( */
+    /*         server->listener, server, (struct sockaddr *)&remote->addr, (socklen_t)remote->addr_len, */
+    /*         0, IKCP_CMD_EXT_SHK); */
+    /*     listener->kcp_last_send_ms = curtime_ms; */
+    /* } */
 }
 
 static void kcp_recv_cb(EV_P_ ev_io *w, int revents) {
@@ -2355,6 +2377,8 @@ main(int argc, char **argv)
     listen_ctx.mptcp   = mptcp;
     listen_ctx.use_kcp = use_kcp;
     listen_ctx.kcp_fd = 0;
+    listen_ctx.kcp_last_send_ms = cur_time_ms();
+    listen_ctx.kcp_shk_ms = (IUINT32)((listen_ctx.timeout * 1000) * 0.8);
     listen_ctx.kcp_sndwnd = kcp_sndwnd;
     listen_ctx.kcp_rcvwnd = kcp_rcvwnd;
     listen_ctx.kcp_nodelay = kcp_nodelay;

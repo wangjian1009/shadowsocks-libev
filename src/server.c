@@ -68,7 +68,7 @@
 #endif
 
 #ifndef DFT_BUF_SIZE
-#define DFT_BUF_SIZE 1024
+#define DFT_BUF_SIZE (1024 * 2)
 #endif
 
 #ifndef SSMAXCONN
@@ -118,6 +118,7 @@ extern IUINT32 IKCP_CMD_PUSH /* = 81*/;
 extern IUINT32 IKCP_CMD_ACK  /*= 82*/;
 extern IUINT32 IKCP_CMD_WASK /*= 83*/;
 extern IUINT32 IKCP_CMD_WINS /*= 84*/;
+const IUINT32 IKCP_CMD_EXT_SHK = 88;
 const IUINT32 IKCP_CMD_EXT_REMOVE = 89;
 
 static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user);
@@ -210,13 +211,13 @@ stat_update_cb(EV_P_ ev_timer *watcher, int revents)
     struct sockaddr_un svaddr, claddr;
     int sfd = -1;
     size_t msgLen;
-    char resp[DFT_BUF_SIZE];
+    char resp[2048];
 
     if (verbose) {
         LOGI("update traffic stat: tx: %" PRIu64 " rx: %" PRIu64 "", tx, rx);
     }
 
-    snprintf(resp, DFT_BUF_SIZE, "stat: {\"%s\":%" PRIu64 "}", remote_port, tx + rx);
+    snprintf(resp, sizeof(resp), "stat: {\"%s\":%" PRIu64 "}", remote_port, tx + rx);
     msgLen = strlen(resp) + 1;
 
     ss_addr_t ip_addr = { .host = NULL, .port = NULL };
@@ -2001,6 +2002,18 @@ accept_cb(EV_P_ ev_io *w, int revents)
         IUINT32 conv = ikcp_getconv(buf);
         char kcp_cmd = buf[4];
 
+        if (conv == 0) {
+            if (kcp_cmd == IKCP_CMD_EXT_SHK) {
+                if (verbose) {
+                    LOGI("%d: udp >>> %d [global shk]", listener->fd, len);
+                }
+            }
+            else {
+                LOGE("%d: udp >>> %d conv error!", listener->fd, len);
+            }
+            return;
+        }
+        
         server_t * server = kcp_find_server(conv, &clientaddr);
         if (server == NULL) {
             if (kcp_cmd != IKCP_CMD_PUSH) {
@@ -2024,7 +2037,15 @@ accept_cb(EV_P_ ev_io *w, int revents)
                 listener->fd, server->peer_name);
         }
 
-        if (kcp_cmd == IKCP_CMD_EXT_REMOVE) {
+        if (kcp_cmd == IKCP_CMD_EXT_SHK) {
+            if (verbose) {
+                LOGI("%d: %s: shk", server->listen_ctx->fd, server->peer_name);
+            }
+            ev_timer_again(EV_A_ & server->recv_ctx->watcher);
+            kcp_timer_reset(EV_A_ server);
+            return;
+        }
+        else if (kcp_cmd == IKCP_CMD_EXT_REMOVE) {
             if (verbose) {
                 LOGI("%d: %s: server free(remote cmd remove)", server->listen_ctx->fd, server->peer_name);
             }

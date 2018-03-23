@@ -58,6 +58,8 @@ typedef struct listen_ctx {
     /*kcp*/
     uint8_t use_kcp;
     int kcp_fd;
+    IUINT32 kcp_last_send_ms;
+    IUINT32 kcp_shk_ms;
     ev_io kcp_recv_io;
     ev_timer kcp_update;
 	int kcp_sndwnd;			// sndwnd
@@ -116,6 +118,7 @@ typedef struct remote {
 
     buffer_t *buf;
     ikcpcb *kcp;
+    IUINT32 kcp_last_send_ms;
 
     struct remote_ctx *recv_ctx;
     struct remote_ctx *send_ctx;
