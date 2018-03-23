@@ -2178,13 +2178,22 @@ static int kcp_send_cmd(
 	int nret = sendto(listener->fd, buf, len, 0, addr, addr_len);
 	if (nret > 0) {
         if (verbose) {
-            if (nret != sizeof(buf)) {
-                LOGI("%d: %s: udp <<< %d | %d", listener->fd, server ? server->peer_name : "????", nret, (len - nret));
+            if (nret != len) {
+                LOGI(
+                    "%d: %s: udp <<< %d [conv=%d, cmd=%d] | %d",
+                    listener->fd, server ? server->peer_name : "????", nret, (int)conv, (int)cmd, (len - nret));
+            }
+            else {
+                LOGI(
+                    "%d: %s: udp <<< %d [conv=%d, cmd=%d]",
+                    listener->fd, server ? server->peer_name : "????", nret, (int)conv, (int)cmd);
             }
         }
     }
 	else {
-        LOGE("%d: %s: udp <<< %d cmd data error: %s", listener->fd, server ? server->peer_name : "????", len, strerror(errno));
+        LOGE(
+            "%d: %s: udp <<< %d [conv=%d, cmd=%d] | send error: %s",
+            listener->fd, server ? server->peer_name : "????", len, (int)conv, (int)cmd, strerror(errno));
     }
     return nret;
 }
