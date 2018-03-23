@@ -2219,6 +2219,8 @@ main(int argc, char **argv)
     char tmp_port[8];
 #endif
 
+    assert(0);
+
     int server_num = 0;
     const char *server_host[MAX_REMOTE_NUM];
 

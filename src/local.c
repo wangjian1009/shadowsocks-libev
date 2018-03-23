@@ -144,8 +144,7 @@ extern IUINT32 IKCP_CMD_WASK /*= 83*/;
 extern IUINT32 IKCP_CMD_WINS /*= 84*/;
 const IUINT32 IKCP_CMD_EXT_REMOVE = 89;
 
-static ssize_t send_to_remote(EV_P_ remote_t *remote, const void *buffer, size_t length);
-static void send_to_client(EV_P_ server_t * server, remote_t * remote);
+static int send_to_client(EV_P_ server_t * server, remote_t * remote);
 static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user);
 static int kcp_send_cmd(
     listen_ctx_t * listener, server_t * server,
@@ -255,7 +254,8 @@ create_and_bind(const char *addr, const char *port)
         if (s == 0) {
             /* We managed to bind successfully! */
             break;
-        } else {
+        }
+        else {
             ERROR("bind");
         }
 
@@ -278,10 +278,12 @@ launch_or_create(const char *addr, const char *port)
     if (error == 0) {
         if (cnt == 1) {
             return fds[0];
-        } else {
+        }
+        else {
             FATAL("please don't specify multi entry");
         }
-    } else if (error == ESRCH || error == ENOENT) {
+    }
+    else if (error == ESRCH || error == ENOENT) {
         /* ESRCH:  The calling process is not managed by launchd(8).
          * ENOENT: The socket name specified does not exist
          *          in the caller's launchd.plist(5).
@@ -291,7 +293,8 @@ launch_or_create(const char *addr, const char *port)
             exit(EXIT_FAILURE);
         }
         return create_and_bind(addr, port);
-    } else {
+    }
+    else {
         FATAL("launch_activate_socket() error");
     }
     return -1;
@@ -309,7 +312,8 @@ get_name_from_addr(struct sockaddr * addr, socklen_t addr_len, uint8_t with_port
         struct sockaddr_in *s = (struct sockaddr_in *)addr;
         inet_ntop(AF_INET, &s->sin_addr, name, INET_ADDRSTRLEN);
         port = ntohs(s->sin_port);
-    } else if (addr->sa_family == AF_INET6) {
+    }
+    else if (addr->sa_family == AF_INET6) {
         struct sockaddr_in6 *s = (struct sockaddr_in6 *)addr;
         inet_ntop(AF_INET6, &s->sin6_addr, name, INET6_ADDRSTRLEN);
         port = ntohs(s->sin6_port);
@@ -360,16 +364,20 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
     if (remote == NULL) {
         buf = server->buf;
-    } else {
+    }
+    else {
+        if (remote->buf->len != 0) { 
+            LOGE("server[%s]: server free(cli recv when buf have left data %d)", server->name, (int)remote->buf->len);
+            close_and_free_remote(EV_A_ remote);
+            close_and_free_server(EV_A_ server);
+            return;
+        }
+
         buf = remote->buf;
     }
 
     if (revents != EV_TIMER) {
         r = recv(server->fd, buf->data + buf->len, BUF_SIZE - buf->len, 0);
-        if (verbose) {
-            LOGI("server[%s]: cli >>> %d", server->name, (int)r);
-        }
-        
         if (r == 0) {
             if (verbose) {
                 LOGI("server[%s]: server free(cli disconnected)", server->name);
@@ -384,12 +392,14 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
             return;
-        } else if (r == -1) {
+        }
+        else if (r == -1) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 // no data
                 // continue to wait for recv
                 return;
-            } else {
+            }
+            else {
                 LOGE("server[%s]: server free(cli recv error %s)", server->name, strerror(errno));
 
                 if (remote && remote->kcp) {
@@ -402,6 +412,11 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 return;
             }
         }
+
+        if (verbose) {
+            LOGI("server[%s]: cli >>> %d", server->name, (int)r);
+        }
+        
         buf->len += r;
     }
 
@@ -476,7 +491,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                     IO_STOP(server_recv_ctx->io, "server[%s]: cli [- >>>] | remote connect in process", server->name);
                     if (!remote->kcp) IO_START(remote->send_ctx->io, "server[%s]: tcp [+ >>>] | remote connect in process", server->name);
                     TIMER_START(remote->send_ctx->watcher, "server[%s]: %s: [+ timeout]", server->name, remote->kcp ? "udp" : "tcp");
-                } else {
+                }
+                else {
 #if defined(MSG_FASTOPEN) && !defined(TCP_FASTOPEN_CONNECT)
                     int s = -1;
                     s = sendto(remote->fd, remote->buf->data, remote->buf->len, MSG_FASTOPEN,
@@ -546,8 +562,9 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 #else
                     FATAL("fast open is not enabled in this build");
 #endif
-                    if (s == 0)
-                        s = send_to_remote(EV_A_ remote, remote->buf->data, remote->buf->len);
+                    if (s == 0) {
+                        s = send(remote->fd, remote->buf->data, remote->buf->len, 0);
+                    }
 #endif
                     if (s == -1) {
                         if (errno == CONNECT_IN_PROGRESS) {
@@ -556,19 +573,22 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                             IO_STOP(server_recv_ctx->io, "server[%s]: cli [- >>>] | connect in process", server->name);
                             if (!remote->kcp) IO_START(remote->send_ctx->io, "server[%s]: tcp [+ >>>] | connect in process", server->name);
                             return;
-                        } else {
+                        }
+                        else {
                             if (errno == EOPNOTSUPP || errno == EPROTONOSUPPORT || errno == ENOPROTOOPT) {
                                 LOGE("server[%s]: fast open is not supported on this platform", server->name);
                                 // just turn it off
                                 fast_open = 0;
-                            } else {
+                            }
+                            else {
                                 LOGE("server[%s]: server free(fast_open_connect)", server->name);
                             }
                             close_and_free_remote(EV_A_ remote);
                             close_and_free_server(EV_A_ server);
                             return;
                         }
-                    } else {
+                    }
+                    else {
                         remote->buf->len -= s;
                         remote->buf->idx  = s;
 
@@ -578,36 +598,58 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                         return;
                     }
                 }
-            } else {
-                int s = send_to_remote(EV_A_ remote, remote->buf->data, remote->buf->len);
-                if (s == -1) {
-                    if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                        // no data, wait for send
-                        remote->buf->idx = 0;
-                        IO_STOP(server_recv_ctx->io, "server[%s]: cli [- >>>] | send to remote block", server->name);
-                        if (!remote->kcp) IO_START(remote->send_ctx->io, "server[%s]: tcp [+ >>>] | send to remote block", server->name);
-                        return;
-                    } else {
-                        LOGE("server[%s]: server free(send to remote error %s)", server->name, strerror(errno));
+            }
+            else {
+                if (remote->kcp) {
+                    int s = ikcp_send(remote->kcp, remote->buf->data, remote->buf->len);
+                    if (s < 0) {
+                        LOGE("server[%s]: server free(kcp send error %d)", server->name, s);
                         close_and_free_remote(EV_A_ remote);
                         close_and_free_server(EV_A_ server);
                         return;
                     }
-                } else if (s < (int)(remote->buf->len)) {
-                    remote->buf->len -= s;
-                    remote->buf->idx  = s;
-                    IO_STOP(server_recv_ctx->io, "server[%s]: cli [- >>>] | send to remote in process", server->name);
-                    if (!remote->kcp) IO_START(remote->send_ctx->io, "server[%s]: tcp [+ >>>] | send to remote in process", server->name);
-                    return;
-                } else {
+                    
+                    if (verbose) {
+                        LOGI("server[%s]: kcp     >>> %d", server->name, (int)remote->buf->len);
+                    }
+
                     remote->buf->idx = 0;
                     remote->buf->len = 0;
                 }
+                else {
+                    int s = send(remote->fd, remote->buf->data, remote->buf->len, 0);
+                    if (s == -1) {
+                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                            // no data, wait for send
+                            remote->buf->idx = 0;
+                            IO_STOP(server_recv_ctx->io, "server[%s]: cli [- >>>] | send to remote block", server->name);
+                            if (!remote->kcp) IO_START(remote->send_ctx->io, "server[%s]: tcp [+ >>>] | send to remote block", server->name);
+                            return;
+                        }
+                        else {
+                            LOGE("server[%s]: server free(send to remote error %s)", server->name, strerror(errno));
+                            close_and_free_remote(EV_A_ remote);
+                            close_and_free_server(EV_A_ server);
+                            return;
+                        }
+                    }
+                    else if (s < (int)(remote->buf->len)) {
+                        remote->buf->len -= s;
+                        remote->buf->idx  = s;
+                        IO_STOP(server_recv_ctx->io, "server[%s]: cli [- >>>] | send to remote in process", server->name);
+                        if (!remote->kcp) IO_START(remote->send_ctx->io, "server[%s]: tcp [+ >>>] | send to remote in process", server->name);
+                        return;
+                    }
+                    else {
+                        remote->buf->idx = 0;
+                        remote->buf->len = 0;
+                    }
+                }
             }
-
             // all processed
             return;
-        } else if (server->stage == STAGE_INIT) {
+        }
+        else if (server->stage == STAGE_INIT) {
             if (buf->len < 1)
                 return;
             if (buf->data[0] != SVERSION) {
@@ -652,7 +694,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
             buf->len = 0;
             return;
-        } else if (server->stage == STAGE_HANDSHAKE ||
+        }
+        else if (server->stage == STAGE_HANDSHAKE ||
                    server->stage == STAGE_PARSE ||
                    server->stage == STAGE_SNI) {
             struct socks5_request *request = (struct socks5_request *)buf->data;
@@ -674,7 +717,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 if (verbose) {
                     LOGI("udp assc request accepted");
                 }
-            } else if (request->cmd != 1) {
+            }
+            else if (request->cmd != 1) {
                 LOGE("server[%s]: server free(unsupported cmd: %d)", server->name, request->cmd);
                 struct socks5_response response;
                 response.ver  = SVERSION;
@@ -753,7 +797,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                               ip, INET_ADDRSTRLEN);
                     sprintf(port, "%d", p);
                 }
-            } else if (atyp == 3) {
+            }
+            else if (atyp == 3) {
                 // Domain name
                 uint8_t name_len = *(uint8_t *)(buf->data + request_len);
                 if (buf->len < request_len + 1 + name_len + 2) {
@@ -770,7 +815,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                     host[name_len] = '\0';
                     sprintf(port, "%d", p);
                 }
-            } else if (atyp == 4) {
+            }
+            else if (atyp == 4) {
                 // IP V6
                 size_t in6_addr_len = sizeof(struct in6_addr);
                 if (buf->len < request_len + in6_addr_len + 2) {
@@ -785,7 +831,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                               ip, INET6_ADDRSTRLEN);
                     sprintf(port, "%d", p);
                 }
-            } else {
+            }
+            else {
                 LOGE("server[%s]: server free(unsupported addrtype: %d)", server->name, request->atyp);
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
@@ -810,7 +857,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                     server->stage = STAGE_SNI;
                     TIMER_START(server->delayed_connect_watcher, "server[%s]: tcp [+ delay connect]", server->name);
                     return;
-                } else if (ret > 0) {
+                }
+                else if (ret > 0) {
                     sni_detected = 1;
                     if (acl || verbose) {
                         memcpy(host, hostname, ret);
@@ -946,13 +994,14 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             remote->server = server;
 
             if (remote->kcp) {
-                snprintf(server->name, sizeof(server->name), "%d-%d", server->fd, remote->kcp->conv);
+                snprintf(server->name, sizeof(server->name), "%d-%d", server->fd, (int)remote->kcp->conv);
             }
             
             /*Loki: kcp*/
             if (buf->len > 0 || sni_detected) {
                 continue;
-            } else {
+            }
+            else {
                 TIMER_START(server->delayed_connect_watcher, "server[%s]: tcp [+ delay connect]", server->name);
             }
 
@@ -973,7 +1022,8 @@ server_send_cb(EV_P_ ev_io *w, int revents)
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
         return;
-    } else {
+    }
+    else {
         // has data to send
         ssize_t s = send(server->fd, server->buf->data + server->buf->idx, server->buf->len, 0);
         if (s == -1) {
@@ -983,7 +1033,8 @@ server_send_cb(EV_P_ ev_io *w, int revents)
                 close_and_free_server(EV_A_ server);
             }
             return;
-        } else if (s < (ssize_t)(server->buf->len)) {
+        }
+        else if (s < (ssize_t)(server->buf->len)) {
             // partly sent, move memory, wait for the next time to send
 
             server->buf->len -= s;
@@ -994,7 +1045,8 @@ server_send_cb(EV_P_ ev_io *w, int revents)
             }
             
             return;
-        } else {
+        }
+        else {
             // all sent out, wait for reading
             server->buf->len = 0;
             server->buf->idx = 0;
@@ -1011,7 +1063,10 @@ server_send_cb(EV_P_ ev_io *w, int revents)
                 }
 
                 if (server->buf->len > 0) {
-                    send_to_client(EV_A_ server, remote);
+                    if (send_to_client(EV_A_ server, remote) != 0) {
+                        close_and_free_remote(EV_A_ remote);
+                        close_and_free_server(EV_A_ server);
+                    }
                 }
             }
 
@@ -1064,20 +1119,27 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
 
     ev_timer_again(EV_A_ & remote->recv_ctx->watcher);
 
+    if (server->buf->len > 0) {
+        LOGI("server[%s]: server free(tcp receive with buf len %d)", server->name, (int)server->buf->len); 
+        close_and_free_remote(EV_A_ remote);
+        close_and_free_server(EV_A_ server);
+        return;
+    }
+    
     ssize_t r = recv(remote->fd, server->buf->data, BUF_SIZE, 0);
-
     if (r == 0) {
-        // connection closed
         LOGI("server[%s]: server free(tcp connection colsed)", server->name); 
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
         return;
-    } else if (r == -1) {
+    }
+    else if (r == -1) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             // no data
             // continue to wait for recv
             return;
-        } else {
+        }
+        else {
             LOGE("server[%s]: server free(tcp recv error %s)", server->name, strerror(errno)); 
             close_and_free_remote(EV_A_ remote);
             close_and_free_server(EV_A_ server);
@@ -1085,8 +1147,15 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         }
     }
 
+    if (verbose) {
+        LOGI("server[%s]: tcp    <<< %d", server->name, (int)r);
+    }
+    
     server->buf->len = r;
-    send_to_client(EV_A_ server, remote);
+    if (send_to_client(EV_A_ server, remote) != 0) {
+        close_and_free_remote(EV_A_ remote);
+        close_and_free_server(EV_A_ server);
+    }
 }
 
 static void
@@ -1114,10 +1183,12 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
                     remote->buf->len -= numBytes;
                     remote->buf->idx  = numBytes;
                     remote->connect_ex_done = 1;
-                } else if (WSAGetLastError() == WSA_IO_INCOMPLETE) {
+                }
+                else if (WSAGetLastError() == WSA_IO_INCOMPLETE) {
                     // XXX: ConnectEx still not connected, wait for next time
                     return;
-                } else {
+                }
+                else {
                     ERROR("WSAGetOverlappedResult");
                     // not connected
                     close_and_free_remote(EV_A_ remote);
@@ -1149,7 +1220,8 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
                 IO_START(server->recv_ctx->io, "server[%s]: cli [+ >>>] | cli no data", server->name);
                 return;
             }
-        } else {
+        }
+        else {
             // not connected
             LOGE("server[%s]: server free(tcp getpeername error %s)", server->name, strerror(errno));
             close_and_free_remote(EV_A_ remote);
@@ -1166,29 +1238,49 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
         return;
-    } else {
-        // has data to send
-        ssize_t s = send_to_remote(EV_A_ remote, remote->buf->data + remote->buf->idx,
-                                   remote->buf->len);
-        if (s == -1) {
-            if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                LOGE("server[%s]: server free(send to remote error)", server->name);
-                // close and free
+    }
+    else {
+        if (remote->kcp) {
+            int s = ikcp_send(remote->kcp, remote->buf->data + remote->buf->idx, remote->buf->len);
+            if (s < 0) {
+                LOGE("server[%s]: server free(kcp send error %d)", server->name, s);
                 close_and_free_remote(EV_A_ remote);
                 close_and_free_server(EV_A_ server);
+                return;
             }
-            return;
-        } else if (s < (ssize_t)(remote->buf->len)) {
-            // partly sent, move memory, wait for the next time to send
-            remote->buf->len -= s;
-            remote->buf->idx += s;
-            return;
-        } else {
-            // all sent out, wait for reading
+            
+            if (verbose) {
+                LOGI("server[%s]: kcp     >>> %d", server->name, (int)remote->buf->len);
+            }
+        
             remote->buf->len = 0;
             remote->buf->idx = 0;
             IO_STOP(remote->send_ctx->io, "server[%s]: tcp [- >>>] | remote send complete", server->name);
             IO_START(server->recv_ctx->io, "server[%s]: cli [+ >>>] | remote send complete", server->name);
+        }
+        else {
+            ssize_t s = send(remote->fd, remote->buf->data + remote->buf->idx, remote->buf->len, 0);
+            if (s == -1) {
+                if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                    LOGE("server[%s]: server free(send to remote error %s)", server->name, strerror(errno));
+                    close_and_free_remote(EV_A_ remote);
+                    close_and_free_server(EV_A_ server);
+                }
+                return;
+            }
+            else if (s < (ssize_t)(remote->buf->len)) {
+                // partly sent, move memory, wait for the next time to send
+                remote->buf->len -= s;
+                remote->buf->idx += s;
+                return;
+            }
+            else {
+                // all sent out, wait for reading
+                remote->buf->len = 0;
+                remote->buf->idx = 0;
+                IO_STOP(remote->send_ctx->io, "server[%s]: tcp [- >>>] | remote send complete", server->name);
+                IO_START(server->recv_ctx->io, "server[%s]: cli [+ >>>] | remote send complete", server->name);
+            }
         }
     }
 }
@@ -1380,7 +1472,8 @@ create_remote(listen_ctx_t *listener, struct sockaddr *addr, int direct)
     int index = rand() % listener->remote_num;
     if (addr == NULL) {
         remote_addr = listener->remote_addr[index];
-    } else {
+    }
+    else {
         remote_addr = addr;
     }
 
@@ -1408,7 +1501,8 @@ create_remote(listen_ctx_t *listener, struct sockaddr *addr, int direct)
             if (err == -1) {
                 ERROR("failed to enable multipath TCP");
             }
-        } else if (listener->mptcp == 1) {
+        }
+        else if (listener->mptcp == 1) {
             int i = 0;
             while ((listener->mptcp = mptcp_enabled_values[i]) > 0) {
                 int err = setsockopt(remotefd, SOL_TCP, listener->mptcp, &opt, sizeof(opt));
@@ -1499,8 +1593,8 @@ accept_cb(EV_P_ ev_io *w, int revents)
     IO_START(server->recv_ctx->io, "server[%s]: cli [+ >>>]", server->name);
 }
 
-static void send_to_client(EV_P_ server_t * server, remote_t * remote) {
-        if (!remote->direct) {
+static int send_to_client(EV_P_ server_t * server, remote_t * remote) {
+    if (!remote->direct) {
 #ifdef __ANDROID__
         rx += server->buf->len;
         stat_update_cb();
@@ -1508,16 +1602,19 @@ static void send_to_client(EV_P_ server_t * server, remote_t * remote) {
         int err = crypto->decrypt(server->buf, server->d_ctx, BUF_SIZE);
         if (err == CRYPTO_ERROR) {
             LOGE("server[%s]: server close(invalid password or cipher)", server->name);
-            close_and_free_remote(EV_A_ remote);
-            close_and_free_server(EV_A_ server);
-            return;
-        } else if (err == CRYPTO_NEED_MORE) {
-            return; // Wait for more
+            return -1;
+        }
+        else if (err == CRYPTO_NEED_MORE) {
+            return 0; // Wait for more
         }
     }
 
+    if (server->buf->idx != 0) {
+        LOGE("server[%s]: server closed(send to client with buf idx %d)", server->name, (int)server->buf->idx);
+        return -1;
+    }
+    
     int s = send(server->fd, server->buf->data, server->buf->len, 0);
-
     if (s == -1) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             // no data, wait for send
@@ -1527,9 +1624,7 @@ static void send_to_client(EV_P_ server_t * server, remote_t * remote) {
         }
         else {
             LOGE("server[%s]: server free(cli send error %s)", server->name, strerror(errno)); 
-            close_and_free_remote(EV_A_ remote);
-            close_and_free_server(EV_A_ server);
-            return;
+            return -1;
         }
     }
     else if (s < (int)(server->buf->len)) {
@@ -1560,25 +1655,10 @@ static void send_to_client(EV_P_ server_t * server, remote_t * remote) {
         setsockopt(remote->fd, SOL_TCP, TCP_NODELAY, &opt, sizeof(opt));
     }
     remote->recv_ctx->connected = 1;
+    return 0;
 }
 
 /*Loki: kcp */
-static ssize_t send_to_remote(EV_P_ remote_t *remote, const void *buffer, size_t length) {
-    server_t *server = remote->server;
-
-    if (remote->kcp) {
-        int kcp_r = ikcp_send(remote->kcp, buffer, length);
-        if (verbose) {
-            LOGI("server[%s]: kcp     >>> %d", server->name, (int)length);
-        }
-        
-        return kcp_r;
-    }
-    else {
-        return send(remote->fd, buffer, length, 0);
-    }
-}
-
 static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user) {
     remote_t * remote = user;
     server_t * server = remote->server;
@@ -1650,11 +1730,17 @@ static void kcp_log(const char *log, ikcpcb *kcp, void *user) {
 
 static int kcp_recv_data(server_t * server, remote_t * remote) {
     assert(server->buf->len == 0);
+
+    if (server->buf->len > 0) {
+        LOGE("server[%s]: server free(kcp recv with buf len=%d)", server->name, (int)server->buf->len);
+        return -1;
+    }
+    
     int r = ikcp_recv(remote->kcp, server->buf->data, BUF_SIZE);
     if (r < 0) {
         if (r == -3) {
             if (verbose) {
-                LOGE("server[%s]: kcp     <<< error, obuf small", server->name);
+                LOGE("server[%s]: server free(kcp recv error, obuf small)", server->name);
             }
             return -1;
         }
@@ -1761,7 +1847,10 @@ static void kcp_recv_cb(EV_P_ ev_io *w, int revents) {
 
         if (server->buf->len == 0) return;
 
-        send_to_client(EV_A_ server, remote);
+        if (send_to_client(EV_A_ server, remote) != 0) {
+            close_and_free_remote(EV_A_ remote);
+            close_and_free_server(EV_A_ server);
+        }
     }
 }
 
