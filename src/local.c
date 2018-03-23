@@ -1683,6 +1683,10 @@ static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user) {
                 LOGI("server[%s]: udp         >>> %d", server->name, nret);
             }
         }
+
+        server->listener->kcp_last_send_ms
+            = remote->kcp_last_send_ms
+            = cur_time_ms();
     }
 	else {
         LOGE("server[%s]: udp         >>> %d data error: %s", server->name, len, strerror(errno));
@@ -1856,6 +1860,10 @@ static void kcp_recv_cb(EV_P_ ev_io *w, int revents) {
     assert(conv == remote->kcp->conv);
     if (verbose) {
         LOGI("server[%s]: udp         <<< %d", server->name, nrecv);
+    }
+
+    if (kcp_cmd == IKCP_CMD_EXT_SHK) {
+        return;
     }
 
     int nret = ikcp_input(remote->kcp, buf, nrecv);

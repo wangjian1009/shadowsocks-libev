@@ -2042,7 +2042,9 @@ accept_cb(EV_P_ ev_io *w, int revents)
                 LOGI("%d: %s: shk", server->listen_ctx->fd, server->peer_name);
             }
             ev_timer_again(EV_A_ & server->recv_ctx->watcher);
-            kcp_timer_reset(EV_A_ server);
+            kcp_send_cmd(
+                server->listen_ctx, server, (struct sockaddr *)&server->addr, (socklen_t)server->addr_len,
+                server->kcp->conv, IKCP_CMD_EXT_SHK);
             return;
         }
         else if (kcp_cmd == IKCP_CMD_EXT_REMOVE) {
