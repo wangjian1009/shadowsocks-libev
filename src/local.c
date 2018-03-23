@@ -80,8 +80,8 @@
 #define EWOULDBLOCK EAGAIN
 #endif
 
-#ifndef BUF_SIZE
-#define BUF_SIZE 4096
+#ifndef DFT_BUF_SIZE
+#define DFT_BUF_SIZE 2048
 #endif
 
 int verbose        = 0;
@@ -377,7 +377,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     }
 
     if (revents != EV_TIMER) {
-        r = recv(server->fd, buf->data + buf->len, BUF_SIZE - buf->len, 0);
+        r = recv(server->fd, buf->data + buf->len, buf->capacity - buf->len, 0);
         if (r == 0) {
             if (verbose) {
                 LOGI("server[%s]: server free(cli disconnected)", server->name);
@@ -434,7 +434,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 #ifdef __ANDROID__
                 tx += remote->buf->len;
 #endif
-                int err = crypto->encrypt(remote->buf, server->e_ctx, BUF_SIZE);
+                int err = crypto->encrypt(remote->buf, server->e_ctx, remote->buf->capacity);
 
                 if (err) {
                     LOGE("server[%s]: server free(invalid password or cipher)", server->name);
@@ -444,7 +444,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 }
 
                 if (server->abuf) {
-                    bprepend(remote->buf, server->abuf, BUF_SIZE);
+                    bprepend(remote->buf, server->abuf, DFT_BUF_SIZE);
                     bfree(server->abuf);
                     ss_free(server->abuf);
                     server->abuf = NULL;
@@ -743,7 +743,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
                 buffer_t resp_to_send;
                 buffer_t *resp_buf = &resp_to_send;
-                balloc(resp_buf, BUF_SIZE);
+                balloc(resp_buf, DFT_BUF_SIZE);
 
                 memcpy(resp_buf->data, &response, sizeof(struct socks5_response));
                 memcpy(resp_buf->data + sizeof(struct socks5_response),
@@ -854,7 +854,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 else if (dst_port == tls_protocol->default_port)
                     ret = tls_protocol->parse_packet(buf->data + 3 + abuf->len,
                                                      buf->len - 3 - abuf->len, &hostname);
-                if (ret == -1 && buf->len < BUF_SIZE && server->stage != STAGE_SNI) {
+                if (ret == -1 && buf->len < DFT_BUF_SIZE && server->stage != STAGE_SNI) {
                     server->stage = STAGE_SNI;
                     TIMER_START(server->delayed_connect_watcher, "server[%s]: tcp [+ delay connect]", server->name);
                     return;
@@ -976,7 +976,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             }
 
             if (!remote->direct) {
-                int err = crypto->encrypt(abuf, server->e_ctx, BUF_SIZE);
+                int err = crypto->encrypt(abuf, server->e_ctx, DFT_BUF_SIZE);
                 if (err) {
                     LOGE("server[%s]: server free(invalid password or cipher)", server->name);
                     close_and_free_remote(EV_A_ remote);
@@ -1124,7 +1124,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         return;
     }
     
-    ssize_t r = recv(remote->fd, server->buf->data, BUF_SIZE, 0);
+    ssize_t r = recv(remote->fd, server->buf->data, server->buf->capacity, 0);
     if (r == 0) {
         if (verbose) {
             LOGI("server[%s]: server free(tcp connection colsed)", server->name);
@@ -1296,7 +1296,7 @@ new_remote(listen_ctx_t *listener, int fd, int timeout, uint8_t use_kcp)
     remote->buf      = ss_malloc(sizeof(buffer_t));
     remote->recv_ctx = ss_malloc(sizeof(remote_ctx_t));
     remote->send_ctx = ss_malloc(sizeof(remote_ctx_t));
-    balloc(remote->buf, BUF_SIZE);
+    balloc(remote->buf, DFT_BUF_SIZE);
     memset(remote->recv_ctx, 0, sizeof(remote_ctx_t));
     memset(remote->send_ctx, 0, sizeof(remote_ctx_t));
     remote->recv_ctx->connected = 0;
@@ -1391,8 +1391,8 @@ new_server(int fd)
     server->buf->len = 0;
     server->buf->idx = 0;
     server->abuf     = ss_malloc(sizeof(buffer_t));
-    balloc(server->buf, BUF_SIZE);
-    balloc(server->abuf, BUF_SIZE);
+    balloc(server->buf, DFT_BUF_SIZE);
+    balloc(server->abuf, DFT_BUF_SIZE);
     memset(server->recv_ctx, 0, sizeof(server_ctx_t));
     memset(server->send_ctx, 0, sizeof(server_ctx_t));
     server->stage               = STAGE_INIT;
@@ -1597,7 +1597,7 @@ static int send_to_client(EV_P_ server_t * server, remote_t * remote) {
         rx += server->buf->len;
         stat_update_cb();
 #endif
-        int err = crypto->decrypt(server->buf, server->d_ctx, BUF_SIZE);
+        int err = crypto->decrypt(server->buf, server->d_ctx, server->buf->capacity);
         if (err == CRYPTO_ERROR) {
             LOGE("server[%s]: server close(invalid password or cipher)", server->name);
             return -1;
@@ -1733,11 +1733,20 @@ static int kcp_recv_data(server_t * server, remote_t * remote) {
         LOGE("server[%s]: server free(kcp recv with buf len=%d)", server->name, (int)server->buf->len);
         return -1;
     }
+
+    int peek_size = ikcp_peeksize(remote->kcp);
+    if (peek_size < 0) return 0;
+
+    if (peek_size > server->buf->capacity) {
+        brealloc(server->buf, server->buf->len, peek_size);
+    }
     
-    int r = ikcp_recv(remote->kcp, server->buf->data, BUF_SIZE);
+    int r = ikcp_recv(remote->kcp, server->buf->data, server->buf->capacity);
     if (r < 0) {
         if (r == -3) {
-            LOGE("server[%s]: server free(kcp recv error, obuf small)", server->name);
+            LOGE(
+                "server[%s]: server free(kcp recv error, obuf small %d ==> %d)",
+                server->name, ikcp_peeksize(remote->kcp), (int)server->buf->capacity);
             return -1;
         }
         return 0;

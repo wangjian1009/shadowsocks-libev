@@ -67,8 +67,8 @@
 #define EWOULDBLOCK EAGAIN
 #endif
 
-#ifndef BUF_SIZE
-#define BUF_SIZE 2048
+#ifndef DFT_BUF_SIZE
+#define DFT_BUF_SIZE 1024
 #endif
 
 #ifndef SSMAXCONN
@@ -210,13 +210,13 @@ stat_update_cb(EV_P_ ev_timer *watcher, int revents)
     struct sockaddr_un svaddr, claddr;
     int sfd = -1;
     size_t msgLen;
-    char resp[BUF_SIZE];
+    char resp[DFT_BUF_SIZE];
 
     if (verbose) {
         LOGI("update traffic stat: tx: %" PRIu64 " rx: %" PRIu64 "", tx, rx);
     }
 
-    snprintf(resp, BUF_SIZE, "stat: {\"%s\":%" PRIu64 "}", remote_port, tx + rx);
+    snprintf(resp, DFT_BUF_SIZE, "stat: {\"%s\":%" PRIu64 "}", remote_port, tx + rx);
     msgLen = strlen(resp) + 1;
 
     ss_addr_t ip_addr = { .host = NULL, .port = NULL };
@@ -806,7 +806,7 @@ server_process_data(EV_P_ server_t * server, buffer_t *buf)
         return -1;
     }
     
-    int err = crypto->decrypt(buf, server->d_ctx, BUF_SIZE);
+    int err = crypto->decrypt(buf, server->d_ctx, buf->capacity);
 
     if (err == CRYPTO_ERROR) {
         assert(!server->kcp);
@@ -1064,7 +1064,7 @@ server_process_data(EV_P_ server_t * server, buffer_t *buf)
 
                 // XXX: should handle buffer carefully
                 if (server->buf->len > 0) {
-                    brealloc(remote->buf, server->buf->len, BUF_SIZE);
+                    brealloc(remote->buf, server->buf->len, server->buf->capacity);
                     memcpy(remote->buf->data, server->buf->data + server->buf->idx,
                            server->buf->len);
                     remote->buf->len = server->buf->len;
@@ -1137,7 +1137,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
     assert(!server->kcp);
     assert(buf->len == 0);
-    ssize_t r = recv(server->fd_or_conv, buf->data, BUF_SIZE, 0);
+    ssize_t r = recv(server->fd_or_conv, buf->data, buf->capacity, 0);
 
     if (r == 0) {
         // connection closed
@@ -1342,7 +1342,7 @@ resolv_cb(struct sockaddr *addr, void *data)
 
             // XXX: should handle buffer carefully
             if (server->buf->len > 0) {
-                brealloc(remote->buf, server->buf->len, BUF_SIZE);
+                brealloc(remote->buf, server->buf->len, server->buf->capacity);
                 memcpy(remote->buf->data, server->buf->data + server->buf->idx,
                        server->buf->len);
                 remote->buf->len = server->buf->len;
@@ -1383,7 +1383,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         return;
     }
 
-    ssize_t r = recv(remote->fd, server->buf->data, BUF_SIZE, 0);
+    ssize_t r = recv(remote->fd, server->buf->data, server->buf->capacity, 0);
     if (r == 0) {
         // connection closed
         if (server->kcp) {
@@ -1443,7 +1443,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     }
     
     server->buf->len = r;
-    int err = crypto->encrypt(server->buf, server->e_ctx, BUF_SIZE);
+    int err = crypto->encrypt(server->buf, server->e_ctx, server->buf->capacity);
     if (err) {
         LOGE("%d: %s: server free(invalid password or cipher)", server->listen_ctx->fd, server->peer_name);
         close_and_free_remote(EV_A_ remote);
@@ -1724,7 +1724,7 @@ new_remote(int fd)
     remote->recv_ctx = ss_malloc(sizeof(remote_ctx_t));
     remote->send_ctx = ss_malloc(sizeof(remote_ctx_t));
     remote->buf      = ss_malloc(sizeof(buffer_t));
-    balloc(remote->buf, BUF_SIZE);
+    balloc(remote->buf, DFT_BUF_SIZE);
     memset(remote->recv_ctx, 0, sizeof(remote_ctx_t));
     memset(remote->send_ctx, 0, sizeof(remote_ctx_t));
     remote->fd                  = fd;
@@ -1797,7 +1797,7 @@ new_server(int fd_or_conv, listen_ctx_t *listener, const char * peer_name, struc
     server->buf      = ss_malloc(sizeof(buffer_t));
     memset(server->recv_ctx, 0, sizeof(server_ctx_t));
     memset(server->send_ctx, 0, sizeof(server_ctx_t));
-    balloc(server->buf, BUF_SIZE);
+    balloc(server->buf, DFT_BUF_SIZE);
     server->fd_or_conv                  = fd_or_conv;
     server->recv_ctx->server    = server;
     server->send_ctx->server    = server;
@@ -2205,8 +2205,15 @@ static void kcp_log(const char *log, ikcpcb *kcp, void *user) {
 
 static void kcp_update_cb(EV_P_ ev_timer *watcher, int revents) {
     server_t * server = watcher->data;
-    kcp_do_update(server);
+
     kcp_timer_reset(EV_A_ server);
+    
+    kcp_do_update(server);
+    if (server->remote && kcp_forward_data(EV_A_ server) != 0) {
+        close_and_free_remote(EV_A_ server->remote);
+        close_and_free_server(EV_A_ server, 1);
+        return;
+    }
 }
 
 static void kcp_do_update(server_t * server) {
@@ -2248,11 +2255,20 @@ static int kcp_forward_data(EV_P_ server_t  * server)
         LOGE("%d: %s: server free(kcp recv with buf len %d)", server->listen_ctx->fd, server->peer_name, (int)buf->len);
         return -1;
     }
+
+    int peek_size = ikcp_peeksize(server->kcp);
+    if (peek_size < 0) return 0;
+
+    if (peek_size > buf->capacity) {
+        brealloc(buf, buf->len, peek_size);
+    }
     
-    int nrecv = ikcp_recv(server->kcp, buf->data, BUF_SIZE);
+    int nrecv = ikcp_recv(server->kcp, buf->data, buf->capacity);
     if (nrecv < 0) {
         if (nrecv == -3) {
-            LOGE("%d: %s: server free(kcp recv error, obuf is small)", server->listen_ctx->fd, server->peer_name);
+            LOGE(
+                "%d: %s: server free(kcp recv error, obuf is small %d ==> %d)",
+                server->listen_ctx->fd, server->peer_name, ikcp_peeksize(server->kcp), (int)buf->capacity);
             return -1;
         }
         return 0;
@@ -2318,8 +2334,8 @@ main(int argc, char **argv)
     int mptcp       = 0;
     int mtu         = 0;
     uint8_t use_kcp = 0;
-    int kcp_sndwnd  = 1024;
-	int kcp_rcvwnd  = 1024;
+    int kcp_sndwnd  = 3;
+	int kcp_rcvwnd  = 3;
 	int kcp_nodelay = 0;	
 	int kcp_interval= 20;
 	int kcp_resend  = 2;
