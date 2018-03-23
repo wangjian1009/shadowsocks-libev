@@ -695,9 +695,10 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             buf->len = 0;
             return;
         }
-        else if (server->stage == STAGE_HANDSHAKE ||
-                   server->stage == STAGE_PARSE ||
-                   server->stage == STAGE_SNI) {
+        else if (server->stage == STAGE_HANDSHAKE
+                 || server->stage == STAGE_PARSE
+                 || server->stage == STAGE_SNI)
+        {
             struct socks5_request *request = (struct socks5_request *)buf->data;
             size_t request_len             = sizeof(struct socks5_request);
             struct sockaddr_in sock_addr;
@@ -995,6 +996,8 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
             if (remote->kcp) {
                 snprintf(server->name, sizeof(server->name), "%d-%d", server->fd, (int)remote->kcp->conv);
+
+                TIMER_START(remote->recv_ctx->watcher, "server[%s]: udp [+ <<< timeout]", server->name);
             }
             
             /*Loki: kcp*/
@@ -1018,7 +1021,7 @@ server_send_cb(EV_P_ ev_io *w, int revents)
     remote_t *remote              = server->remote;
     if (server->buf->len == 0) {
         // close and free
-        LOGI("server[%s]: server free(cli send with buf 0)", server->name);
+        LOGE("server[%s]: server free(cli send with buf 0)", server->name);
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
         return;
@@ -1094,17 +1097,12 @@ stat_update_cb()
 #endif
 
 static void
-remote_timeout_cb(EV_P_ ev_timer *watcher, int revents)
-{
-    remote_ctx_t *remote_ctx
-        = cork_container_of(watcher, remote_ctx_t, watcher);
-
+remote_timeout_cb(EV_P_ ev_timer *watcher, int revents) {
+    remote_ctx_t *remote_ctx = cork_container_of(watcher, remote_ctx_t, watcher);
     remote_t *remote = remote_ctx->remote;
     server_t *server = remote->server;
 
-    if (verbose) {
-        LOGI("server[%s]: server free(tcp connection timeout)", server->name);
-    }
+    LOGE("server[%s]: server free(%s connection timeout)", server->name, remote->kcp ? "udp" : "tcp");
 
     close_and_free_remote(EV_A_ remote);
     close_and_free_server(EV_A_ server);
@@ -1120,7 +1118,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     ev_timer_again(EV_A_ & remote->recv_ctx->watcher);
 
     if (server->buf->len > 0) {
-        LOGI("server[%s]: server free(tcp receive with buf len %d)", server->name, (int)server->buf->len); 
+        LOGE("server[%s]: server free(tcp receive with buf len %d)", server->name, (int)server->buf->len); 
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
         return;
@@ -1128,7 +1126,9 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     
     ssize_t r = recv(remote->fd, server->buf->data, BUF_SIZE, 0);
     if (r == 0) {
-        LOGI("server[%s]: server free(tcp connection colsed)", server->name); 
+        if (verbose) {
+            LOGI("server[%s]: server free(tcp connection colsed)", server->name);
+        }
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
         return;
@@ -1335,10 +1335,8 @@ new_remote(listen_ctx_t *listener, int fd, int timeout, uint8_t use_kcp)
 
     ev_io_init(&remote->recv_ctx->io, remote_recv_cb, fd, EV_READ);
     ev_io_init(&remote->send_ctx->io, remote_send_cb, fd, EV_WRITE);
-    ev_timer_init(&remote->send_ctx->watcher, remote_timeout_cb,
-                  min(MAX_CONNECT_TIMEOUT, timeout), 0);
-    ev_timer_init(&remote->recv_ctx->watcher, remote_timeout_cb,
-                  timeout, timeout);
+    ev_timer_init(&remote->send_ctx->watcher, remote_timeout_cb, min(MAX_CONNECT_TIMEOUT, timeout), 0);
+    ev_timer_init(&remote->recv_ctx->watcher, remote_timeout_cb, timeout, timeout);
 
     return remote;
 }
@@ -1739,9 +1737,7 @@ static int kcp_recv_data(server_t * server, remote_t * remote) {
     int r = ikcp_recv(remote->kcp, server->buf->data, BUF_SIZE);
     if (r < 0) {
         if (r == -3) {
-            if (verbose) {
-                LOGE("server[%s]: server free(kcp recv error, obuf small)", server->name);
-            }
+            LOGE("server[%s]: server free(kcp recv error, obuf small)", server->name);
             return -1;
         }
         return 0;
@@ -1822,6 +1818,8 @@ static void kcp_recv_cb(EV_P_ ev_io *w, int revents) {
     remote_t * remote = server->remote;
     assert(remote);
 
+    ev_timer_again(EV_A_ & remote->recv_ctx->watcher);
+    
     assert(conv == remote->kcp->conv);
     if (verbose) {
         LOGI("server[%s]: udp         <<< %d", server->name, nrecv);
@@ -1829,9 +1827,7 @@ static void kcp_recv_cb(EV_P_ ev_io *w, int revents) {
 
     int nret = ikcp_input(remote->kcp, buf, nrecv);
     if (nret < 0) {
-        if (verbose) {
-            LOGE("server[%s]: server free(kcp input %d data fail, rv=%d)", server->name, nrecv, nret);
-        }
+        LOGE("server[%s]: server free(kcp input %d data fail, rv=%d)", server->name, nrecv, nret);
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
         return;

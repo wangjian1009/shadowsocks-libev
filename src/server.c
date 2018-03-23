@@ -647,9 +647,9 @@ connect_to_remote(EV_P_ struct addrinfo *res, server_t *server) {
         int s = -1;
 #if defined(TCP_FASTOPEN_CONNECT)
         int optval = 1;
-        if(setsockopt(sockfd, IPPROTO_TCP, TCP_FASTOPEN_CONNECT,
-                    (void *)&optval, sizeof(optval)) < 0)
+        if(setsockopt(sockfd, IPPROTO_TCP, TCP_FASTOPEN_CONNECT,(void *)&optval, sizeof(optval)) < 0) {
             FATAL("failed to set TCP_FASTOPEN_CONNECT");
+        }
         s = connect(sockfd, res->ai_addr, res->ai_addrlen);
 #elif defined(CONNECT_DATA_IDEMPOTENT)
         ((struct sockaddr_in *)(res->ai_addr))->sin_len = sizeof(struct sockaddr_in);
@@ -658,8 +658,7 @@ connect_to_remote(EV_P_ struct addrinfo *res, server_t *server) {
         endpoints.sae_dstaddr    = res->ai_addr;
         endpoints.sae_dstaddrlen = res->ai_addrlen;
 
-        s = connectx(sockfd, &endpoints, SAE_ASSOCID_ANY, CONNECT_DATA_IDEMPOTENT,
-                         NULL, 0, NULL, NULL);
+        s = connectx(sockfd, &endpoints, SAE_ASSOCID_ANY, CONNECT_DATA_IDEMPOTENT, NULL, 0, NULL, NULL);
 #else
         FATAL("fast open is not enabled in this build");
 #endif
@@ -855,14 +854,14 @@ server_process_data(EV_P_ server_t * server, buffer_t *buf)
             }
         }
         else if (s < remote->buf->len) {
-            remote->buf->len -= s;
-            remote->buf->idx  = s;
-
             if (verbose) {
                 LOGI(
                     "%d: %s: remote         >>> %d | %d",
                     server->listen_ctx->fd, server->peer_name, s, (int)(remote->buf->len - s));
             }
+
+            remote->buf->len -= s;
+            remote->buf->idx  = s;
             
             IO_STOP(
                 server->recv_ctx->io,
@@ -874,14 +873,14 @@ server_process_data(EV_P_ server_t * server, buffer_t *buf)
                 server->listen_ctx->fd, server->peer_name);
         }
         else {
-            remote->buf->len = 0;
-            remote->buf->idx = 0;
-            
             if (verbose) {
                 LOGI(
-                    "%d: %s: remote         >>> %d | %d",
-                    server->listen_ctx->fd, server->peer_name, s, (int)(remote->buf->len - s));
+                    "%d: %s: remote         >>> %d",
+                    server->listen_ctx->fd, server->peer_name, s);
             }
+
+            remote->buf->len = 0;
+            remote->buf->idx = 0;
         }
         
         return 0;
@@ -1142,7 +1141,7 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
         // connection closed
         if (verbose) {
             LOGI(
-                "%d: %s: server free(remote colsed in recv)",
+                "%d: %s: server free(remote colsed)",
                 server->listen_ctx->fd, server->peer_name);
         }
         close_and_free_remote(EV_A_ server->remote);
@@ -1196,11 +1195,9 @@ server_send_cb(EV_P_ ev_io *w, int revents)
 
     if (server->buf->len == 0) {
         // close and free
-        if (verbose) {
-            LOGI(
-                "%d: %s: server free(server send no data)",
-                server->listen_ctx->fd, server->peer_name);
-        }
+        LOGE(
+            "%d: %s: server free(server send no data)",
+            server->listen_ctx->fd, server->peer_name);
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
         return;
@@ -1385,7 +1382,6 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     }
 
     ssize_t r = recv(remote->fd, server->buf->data, BUF_SIZE, 0);
-
     if (r == 0) {
         // connection closed
         if (server->kcp) {
@@ -1446,7 +1442,6 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     
     server->buf->len = r;
     int err = crypto->encrypt(server->buf, server->e_ctx, BUF_SIZE);
-
     if (err) {
         LOGE("%d: %s: server free(invalid password or cipher)", server->listen_ctx->fd, server->peer_name);
         close_and_free_remote(EV_A_ remote);
@@ -1467,7 +1462,10 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
         }
 
         if (verbose) {
-            LOGI("%d: %s: kcp    <<< %d", server->listen_ctx->fd, server->peer_name, (int)server->buf->len);
+            LOGI(
+                "%d: %s: kcp    <<< %d | wait-send=%d, peek-send=%d",
+                server->listen_ctx->fd, server->peer_name, (int)server->buf->len,
+                ikcp_waitsnd(server->kcp), ikcp_peeksize(server->kcp));
         }
         server->buf->len = 0;
         
@@ -1637,9 +1635,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
 
     if (remote->buf->len == 0) {
         // close and free
-        if (verbose) {
-            LOGI("%d: %s: server free(remote send)", server->listen_ctx->fd, server->peer_name);
-        }
+        LOGE("%d: %s: server free(remote send no data)", server->listen_ctx->fd, server->peer_name);
         if (server->kcp) ikcp_flush(server->kcp);
         close_and_free_remote(EV_A_ remote);
         close_and_free_server(EV_A_ server);
@@ -2135,10 +2131,16 @@ static int kcp_output(const char *buf, int len, ikcpcb *kcp, void *user) {
 	if (nret > 0) {
         if (verbose) {
             if (nret != len) {
-                LOGI("%d: %s: udp <<< %d | %d", server->listen_ctx->fd, server->peer_name, nret, (len - nret));
+                LOGI(
+                    "%d: %s: udp <<< %d | %d | wait-send=%d, peek-size=%d",
+                    server->listen_ctx->fd, server->peer_name, nret, (len - nret),
+                    ikcp_waitsnd(kcp), ikcp_peeksize(kcp));
             }
             else {
-                LOGI("%d: %s: udp <<< %d", server->listen_ctx->fd, server->peer_name, nret);
+                LOGI(
+                    "%d: %s: udp <<< %d | wait-send=%d, peek-size=%d",
+                    server->listen_ctx->fd, server->peer_name, nret,
+                    ikcp_waitsnd(kcp), ikcp_peeksize(kcp));
             }
         }
     }
@@ -2241,8 +2243,9 @@ static int kcp_forward_data(EV_P_ server_t  * server)
 
     if (verbose) {
         LOGI(
-            "%d: %s: kcp     >>> %d",
-            server->listen_ctx->fd, server->peer_name, nrecv);
+            "%d: %s: kcp     >>> %d | wait-send=%d, peek-size=%d",
+            server->listen_ctx->fd, server->peer_name, nrecv,
+            ikcp_waitsnd(server->kcp), ikcp_peeksize(server->kcp));
     }
     
     tx      += nrecv;
