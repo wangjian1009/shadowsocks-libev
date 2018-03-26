@@ -190,6 +190,11 @@ static char *remote_port  = NULL;
 static char *manager_addr = NULL;
 uint64_t tx               = 0;
 uint64_t rx               = 0;
+/* reker>> */
+#ifdef __ANDROID__
+ev_tstamp last = 0;
+#endif
+/* <<reker */
 
 #ifndef __MINGW32__
 ev_timer stat_update_watcher;
@@ -282,6 +287,19 @@ stat_update_cb(EV_P_ ev_timer *watcher, int revents)
     close(sfd);
 }
 #endif
+
+/* reker>> */
+#ifdef __ANDROID__
+void
+stat_update_cb_android() {
+    ev_tstamp now = ev_time();
+    if (now - last > 0.5) {
+        send_traffic_stat(tx, rx);
+        last = now;
+    }
+}
+#endif
+/* <<reker */
 
 static void
 free_connections(struct ev_loop *loop)
@@ -1173,6 +1191,12 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
     tx      += r;
     buf->len = r;
 
+    /* reker>> */
+#ifdef __ANDROID__
+    stat_update_cb_android();
+#endif
+    /* <<reker */
+
     if (verbose) {
         LOGI(
             "%d: %s: tcp >>> %d",
@@ -1608,7 +1632,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
             remote->send_ctx->connected = 1;
 
             // Clear the state of this address in the block list
-            assert(!server->kcp);
+//            assert(!server->kcp);
             reset_addr(server->fd_or_conv);
 
             if (remote->buf->len == 0) {
@@ -1618,7 +1642,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
                     "%d: %s: svr [- >>>] | remote getpeername success",
                     server->listen_ctx->fd, server->peer_name);
 
-                assert(!server->kcp);
+//                assert(!server->kcp);
                 IO_START(
                     server->recv_ctx->io,
                     "%d: %s: tcp [+ >>>] | remote getpeername success",
@@ -2316,6 +2340,12 @@ static int kcp_forward_data(EV_P_ server_t  * server)
     tx      += nrecv;
     buf->len = nrecv;
 
+    /* reker>> */
+#ifdef __ANDROID__
+    stat_update_cb_android();
+#endif
+    /* <<reker */
+
     if (server_process_data(EV_A_ server, buf) != 0) {
         return -1;
     }
@@ -2388,8 +2418,6 @@ main(int argc, char **argv)
 #ifndef __MINGW32__
     char tmp_port[8];
 #endif
-
-    assert(0);
 
     int server_num = 0;
     const char *server_host[MAX_REMOTE_NUM];
