@@ -796,9 +796,10 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 abuf->len += in_addr_len + 2;
 
                 if (acl || verbose) {
-                    uint16_t p = ntohs(*(uint16_t *)(buf->data + request_len + in_addr_len));
-                    inet_ntop(AF_INET, (const void *)(buf->data + request_len),
-                              ip, INET_ADDRSTRLEN);
+                    uint16_t p;
+                    memcpy(&p, buf->data + request_len + in_addr_len, sizeof(uint16_t));
+                    p = ntohs(p);
+                    inet_ntop(AF_INET, (const void *)(buf->data + request_len), ip, INET_ADDRSTRLEN);
                     sprintf(port, "%d", p);
                 }
             }
@@ -813,8 +814,9 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 abuf->len += name_len + 2;
 
                 if (acl || verbose) {
-                    uint16_t p =
-                        ntohs(*(uint16_t *)(buf->data + request_len + 1 + name_len));
+                    uint16_t p;
+                    memcpy(&p, buf->data + request_len + 1 + name_len, sizeof(uint16_t));
+                    p = ntohs(p);
                     memcpy(host, buf->data + request_len + 1, name_len);
                     host[name_len] = '\0';
                     sprintf(port, "%d", p);
@@ -830,9 +832,10 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
                 abuf->len += in6_addr_len + 2;
 
                 if (acl || verbose) {
-                    uint16_t p = ntohs(*(uint16_t *)(buf->data + request_len + in6_addr_len));
-                    inet_ntop(AF_INET6, (const void *)(buf->data + request_len),
-                              ip, INET6_ADDRSTRLEN);
+                    uint16_t p;
+                    memcpy(&p, buf->data + request_len + in6_addr_len, sizeof(uint16_t));
+                    p = ntohs(p);
+                    inet_ntop(AF_INET6, (const void *)(buf->data + request_len), ip, INET6_ADDRSTRLEN);
                     sprintf(port, "%d", p);
                 }
             }
@@ -848,7 +851,10 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
             int ret          = 0;
 
             char *hostname;
-            uint16_t dst_port = ntohs(*(uint16_t *)(abuf->data + abuf->len - 2));
+            uint16_t dst_port;
+
+            memcpy(&dst_port, abuf->data + abuf->len - 2, sizeof(uint16_t));
+            dst_port = ntohs(dst_port);
 
             if (atyp == 1 || atyp == 4) {
                 if (dst_port == http_protocol->default_port)
