@@ -828,8 +828,9 @@ server_process_data(EV_P_ server_t * server, buffer_t *buf)
     int err = crypto->decrypt(buf, server->d_ctx, buf->capacity);
 
     if (err == CRYPTO_ERROR) {
-        assert(!server->kcp);
-        report_addr(server->fd_or_conv, MALICIOUS, "authentication error");
+        if (!server->kcp) {
+            report_addr(server->fd_or_conv, MALICIOUS, "authentication error");
+        }
         LOGE(
             "%d: %s: server free(CRYPTO_ERROR)",
             server->listen_ctx->fd, server->peer_name);
@@ -837,8 +838,9 @@ server_process_data(EV_P_ server_t * server, buffer_t *buf)
     }
     else if (err == CRYPTO_NEED_MORE) {
         if (server->stage != STAGE_STREAM && server->frag > MAX_FRAG) {
-            assert(!server->kcp);
-            report_addr(server->fd_or_conv, MALICIOUS, "malicious fragmentation");
+            if (!server->kcp) {
+                report_addr(server->fd_or_conv, MALICIOUS, "malicious fragmentation");
+            }
             LOGE(
                 "%d: %s: server free(CRYPTO_NEED_MORE)",
                 server->listen_ctx->fd, server->peer_name);
@@ -940,8 +942,9 @@ server_process_data(EV_P_ server_t * server, buffer_t *buf)
                 offset += in_addr_len;
             }
             else {
-                assert(!server->kcp);
-                report_addr(server->fd_or_conv, MALFORMED, "invalid length for ipv4 address");
+                if (!server->kcp) {
+                    report_addr(server->fd_or_conv, MALFORMED, "invalid length for ipv4 address");
+                }
                 LOGE(
                     "%d: %s: server free(invalid length for ipv4 address)",
                     server->listen_ctx->fd, server->peer_name);
@@ -962,8 +965,10 @@ server_process_data(EV_P_ server_t * server, buffer_t *buf)
                 offset += name_len + 1;
             }
             else {
-                assert(!server->kcp);
-                report_addr(server->fd_or_conv, MALFORMED, "invalid host name length");
+                if (!server->kcp) {
+                    report_addr(server->fd_or_conv, MALFORMED, "invalid host name length");
+                }
+                LOGE("%d: %s: server free(invalid host name length)", server->listen_ctx->fd, server->peer_name);
                 return -1;
             }
             if (acl && outbound_block_match_host(host) == 1) {
@@ -997,8 +1002,9 @@ server_process_data(EV_P_ server_t * server, buffer_t *buf)
             }
             else {
                 if (!validate_hostname(host, name_len)) {
-                    assert(!server->kcp);
-                    report_addr(server->fd_or_conv, MALFORMED, "invalid host name");
+                    if (!server->kcp) {
+                        report_addr(server->fd_or_conv, MALFORMED, "invalid host name");
+                    }
                     LOGE(
                         "%d: %s: server free(invalid host name)",
                         server->listen_ctx->fd, server->peer_name);
@@ -1018,8 +1024,9 @@ server_process_data(EV_P_ server_t * server, buffer_t *buf)
                 offset += in6_addr_len;
             }
             else {
-                assert(!server->kcp);
-                report_addr(server->fd_or_conv, MALFORMED, "invalid length for ipv6 address");
+                if (!server->kcp) {
+                    report_addr(server->fd_or_conv, MALFORMED, "invalid length for ipv6 address");
+                }
                 LOGE(
                     "%d: %s: server free(invalid header with addr type %d)",
                     server->listen_ctx->fd, server->peer_name, atyp);
@@ -1034,8 +1041,9 @@ server_process_data(EV_P_ server_t * server, buffer_t *buf)
         }
 
         if (offset == 1) {
-            assert(!server->kcp);
-            report_addr(server->fd_or_conv, MALFORMED, "invalid address type");
+            if (!server->kcp) {
+                report_addr(server->fd_or_conv, MALFORMED, "invalid address type");
+            }
             LOGE(
                 "%d: %s: server free(invalid address type)",
                 server->listen_ctx->fd, server->peer_name);
@@ -1047,8 +1055,9 @@ server_process_data(EV_P_ server_t * server, buffer_t *buf)
         offset += 2;
 
         if (server->buf->len < offset) {
-            assert(!server->kcp);
-            report_addr(server->fd_or_conv, MALFORMED, "invalid request length");
+            if (!server->kcp) {
+                report_addr(server->fd_or_conv, MALFORMED, "invalid request length");
+            }
             LOGE(
                 "%d: %s: server free(invalid request length)",
                 server->listen_ctx->fd, server->peer_name);
