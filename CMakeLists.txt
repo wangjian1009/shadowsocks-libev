@@ -32,6 +32,12 @@ message(STATUS "Running cmake version ${CMAKE_VERSION}")
 option(WITH_STATIC "build with static libraries." ON)
 option(WITH_EMBEDDED_SRC "build with embedded libcork, libipset, and libbloom source." ON)
 
+include(${CMAKE_CURRENT_LIST_DIR}/cpe/buildtools/cmake/support-pre.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/net/buildtools/cmake/depends-c-ares.cmake)
+
+add_definitions(-DHAVE_PCRE_H)
+INCLUDE_DIRECTORIES("/usr/local/include")
+
 # Will set GIT_EXECUTABLE and GIT_FOUND
 # find_package(Git)
 
@@ -60,9 +66,6 @@ add_library(kcp STATIC ${KCP_SOURCE})
 
 add_library(kcp-shared SHARED ${KCP_SOURCE})
 set_target_properties(kcp-shared PROPERTIES OUTPUT_NAME kcp)
-
-include(${CMAKE_CURRENT_LIST_DIR}/cpe/buildtools/cmake/support-pre.cmake)
-include(${CMAKE_CURRENT_LIST_DIR}/net/buildtools/cmake/depends-c-ares.cmake)
 
 # Loki: add libebb compile
 FIND_PATH(LIBEV_HEADER ev.h)
@@ -171,5 +174,4 @@ set_target_properties(bloom-shared PROPERTIES OUTPUT_NAME bloom)
 endif ()
 
 add_subdirectory(src)
-add_subdirectory(doc)
 
