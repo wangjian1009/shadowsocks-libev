@@ -16,3 +16,9 @@
 [submodule "libebb"]
 	path = libebb
 	url = git@github.com:wangjian1009/libebb.git
+[submodule "cpe"]
+	path = cpe
+	url = git@github.com:wangjian1009/cpe.git
+[submodule "net"]
+	path = net
+	url = git@github.com:wangjian1009/net.git

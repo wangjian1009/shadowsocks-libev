@@ -97,7 +97,6 @@ find_library(LIBSODIUM libsodium.a)
 find_library(LIBMBEDTLS libmbedtls.a)
 find_library(LIBMBEDCRYPTO libmbedcrypto.a)
 find_library(LIBEV libev.a)
-find_library(LIBUDNS libcares.a)
 find_library(LIBPCRE libpcre.a)
 
 # Dependencies we need for static and shared
@@ -105,7 +104,7 @@ list(APPEND DEPS
         m
         bloom
         ${LIBEV}
-        ${LIBUDNS}
+        cares
         ${LIBPCRE}
         ${LIBSODIUM}
         ${LIBMBEDTLS}
@@ -117,7 +116,6 @@ find_library(LIBSODIUM_SHARED sodium)
 find_library(LIBMBEDTLS_SHARED mbedtls)
 find_library(LIBMBEDCRYPTO_SHARED mbedcrypto)
 find_library(LIBEV_SHARED ev)
-find_library(LIBUDNS_SHARED cares)
 find_library(LIBPCRE_SHARED pcre)
 
 if (WITH_EMBEDDED_SRC)
@@ -131,7 +129,7 @@ list(APPEND DEPS_SHARED
         ${LIBEV_SHARED}
         ${LIBUDNS_SHARED}
         ${LIBPCRE_SHARED}
-        ${LIBSODIUM_SHARED}
+        cares
         ${LIBMBEDTLS_SHARED}
         ${LIBMBEDCRYPTO_SHARED}
         )
@@ -145,7 +143,7 @@ list(APPEND DEPS_SHARED
         ${LIBCORK_SHARED}
         ${LIBCORKIPSET_SHARED}
         ${LIBEV_SHARED}
-        ${LIBUDNS_SHARED}
+        cares
         ${LIBPCRE_SHARED}
         ${LIBSODIUM_SHARED}
         ${LIBMBEDTLS_SHARED}
@@ -180,7 +178,7 @@ target_compile_definitions(shadowsocks-libev PUBLIC -DMODULE_LOCAL)
 
 target_link_libraries(ss-server cork ipset kcp ${DEPS})
 target_link_libraries(ss-tunnel cork ${DEPS})
-target_link_libraries(ss-manager m bloom cork ${LIBEV} ${LIBUDNS})
+target_link_libraries(ss-manager m bloom cork ${LIBEV} cares)
 target_link_libraries(ss-local cork ipset kcp ebb ${DEPS})
 target_link_libraries(ss-redir cork ipset ${DEPS})
 target_link_libraries(shadowsocks-libev cork ipset ${DEPS})

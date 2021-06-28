@@ -61,6 +61,9 @@ add_library(kcp STATIC ${KCP_SOURCE})
 add_library(kcp-shared SHARED ${KCP_SOURCE})
 set_target_properties(kcp-shared PROPERTIES OUTPUT_NAME kcp)
 
+include(${CMAKE_CURRENT_LIST_DIR}/cpe/buildtools/cmake/support-pre.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/net/buildtools/cmake/depends-c-ares.cmake)
+
 # Loki: add libebb compile
 FIND_PATH(LIBEV_HEADER ev.h)
 find_library(LIBEV ev)
